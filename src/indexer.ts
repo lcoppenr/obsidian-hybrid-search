@@ -135,6 +135,25 @@ export async function indexFile(
   }
 }
 
+/**
+ * One-time migration: populate links from stored note content for all notes
+ * that were indexed before the links feature was added. No API calls — just
+ * wikilink parsing and DB writes.
+ */
+export async function populateMissingLinks(): Promise<void> {
+  const db = getDb()
+  const done = (db.prepare("SELECT value FROM settings WHERE key = 'links_v1'").get() as { value: string } | undefined)?.value
+  if (done) return
+
+  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as { path: string; content: string }[]
+  for (const note of notes) {
+    const links = resolveWikilinks(note.content, note.path)
+    upsertLinks(note.path, links)
+  }
+
+  db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES('links_v1', '1')").run()
+}
+
 export async function indexVaultSync(force = false): Promise<IndexResult> {
   // Handle ignore pattern changes: remove notes that are now ignored
   const pathsToRemove = getPathsToRemoveForIgnoreChange(config.ignorePatterns)
@@ -170,6 +189,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
     )
   }
 
+  await populateMissingLinks()
   updateLastIndexed()
   return result
 }

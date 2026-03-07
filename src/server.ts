@@ -7,7 +7,7 @@ import {
 import { config } from './config.js'
 import { openDb, initVecTable, checkModelChanged, getStats, saveConfigMeta } from './db.js'
 import { getContextLength, getEmbeddingDim } from './embedder.js'
-import { startBackgroundIndexing, startWatcher, indexFile, indexVaultSync } from './indexer.js'
+import { startBackgroundIndexing, startWatcher, indexFile, indexVaultSync, populateMissingLinks } from './indexer.js'
 import { search } from './searcher.js'
 
 async function main() {
@@ -183,6 +183,9 @@ async function main() {
   await server.connect(transport)
 
   // Phase 4 & 5: background indexing + watcher (after server is up)
+  populateMissingLinks().catch(err => {
+    console.warn('[server] links migration error:', err)
+  })
   startBackgroundIndexing(contextLength).catch(err => {
     console.warn('[server] background indexing error:', err)
   })
