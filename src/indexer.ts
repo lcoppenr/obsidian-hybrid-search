@@ -154,28 +154,36 @@ export async function populateMissingLinks(): Promise<void> {
   db.prepare("INSERT OR REPLACE INTO settings(key, value) VALUES('links_v1', '1')").run()
 }
 
-export async function indexVaultSync(force = false): Promise<IndexResult> {
-  // Handle ignore pattern changes: remove notes that are now ignored
+/**
+ * Remove notes that no longer belong in the index:
+ * - notes matching updated ignore patterns
+ * - notes whose files were deleted from disk
+ * Called on server startup and during full reindex.
+ */
+export function cleanupStaleNotes(fsPaths?: Set<string>): void {
+  // Handle ignore pattern changes
   const pathsToRemove = getPathsToRemoveForIgnoreChange(config.ignorePatterns)
   for (const p of pathsToRemove) {
     if (isIgnored(p)) deleteNote(p)
   }
 
-  const files = scanVault()
-  const contextLength = await getContextLength()
-  const result: IndexResult = { indexed: 0, skipped: 0, errors: [] }
-
-  // Remove notes deleted from filesystem since last index
-  const db = getDb()
-  const dbPaths = new Set(
-    (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(r => r.path)
-  )
-  const fsPaths = new Set(files.map(f => path.relative(config.vaultPath, f).normalize('NFD')))
-  for (const dbPath of dbPaths) {
-    if (!fsPaths.has(dbPath)) {
-      deleteNote(dbPath)
+  // Remove notes deleted from filesystem
+  if (fsPaths) {
+    const db = getDb()
+    const dbPaths = (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(r => r.path)
+    for (const dbPath of dbPaths) {
+      if (!fsPaths.has(dbPath)) deleteNote(dbPath)
     }
   }
+}
+
+export async function indexVaultSync(force = false): Promise<IndexResult> {
+  const files = scanVault()
+  const fsPaths = new Set(files.map(f => path.relative(config.vaultPath, f).normalize('NFD')))
+  cleanupStaleNotes(fsPaths)
+
+  const contextLength = await getContextLength()
+  const result: IndexResult = { indexed: 0, skipped: 0, errors: [] }
 
   for (let i = 0; i < files.length; i += config.batchSize) {
     const batch = files.slice(i, i + config.batchSize)
@@ -213,6 +221,8 @@ async function processQueue(contextLength: number): Promise<void> {
 
 export async function startBackgroundIndexing(contextLength: number): Promise<void> {
   const files = scanVault()
+  const fsPaths = new Set(files.map(f => path.relative(config.vaultPath, f).normalize('NFD')))
+  cleanupStaleNotes(fsPaths)
   indexQueue.push(...files)
   processQueue(contextLength).catch(err => {
     console.warn('[indexer] background indexing error:', err)
