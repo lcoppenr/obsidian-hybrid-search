@@ -6,7 +6,10 @@ if (!process.env.VAULT_PATH) {
 
 export const config = {
   vaultPath: process.env.VAULT_PATH,
-  ignorePatterns: (process.env.IGNORE_PATTERNS ?? '.obsidian/**,templates/**,*.canvas').split(','),
+  ignorePatterns: (process.env.IGNORE_PATTERNS ?? '.obsidian/**,templates/**,*.canvas')
+    .split(/[,\n]+/)
+    .map(p => p.trim())
+    .filter(Boolean),
   apiKey: process.env.API_KEY,
   apiBaseUrl: process.env.API_BASE_URL ?? 'https://openrouter.ai/api/v1',
   apiModel: process.env.API_EMBEDDING_MODEL ?? 'openai/text-embedding-3-small',

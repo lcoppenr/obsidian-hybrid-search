@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import matter from 'gray-matter'
 import { config } from './config.js'
-import { getDb, getNoteMeta, upsertNote, upsertLinks, deleteNote, updateLastIndexed } from './db.js'
+import { getDb, getNoteMeta, upsertNote, upsertLinks, deleteNote, updateLastIndexed, getPathsToRemoveForIgnoreChange } from './db.js'
 import { embed, getContextLength } from './embedder.js'
 import { chunkNote } from './chunker.js'
 
@@ -26,7 +26,7 @@ function matchesIgnorePattern(relPath: string, pattern: string): boolean {
   return relPath === pattern || relPath.startsWith(pattern + '/')
 }
 
-function isIgnored(relPath: string): boolean {
+export function isIgnored(relPath: string): boolean {
   return config.ignorePatterns.some(p => matchesIgnorePattern(relPath, p.trim()))
 }
 
@@ -136,9 +136,27 @@ export async function indexFile(
 }
 
 export async function indexVaultSync(force = false): Promise<IndexResult> {
+  // Handle ignore pattern changes: remove notes that are now ignored
+  const pathsToRemove = getPathsToRemoveForIgnoreChange(config.ignorePatterns)
+  for (const p of pathsToRemove) {
+    if (isIgnored(p)) deleteNote(p)
+  }
+
   const files = scanVault()
   const contextLength = await getContextLength()
   const result: IndexResult = { indexed: 0, skipped: 0, errors: [] }
+
+  // Remove notes deleted from filesystem since last index
+  const db = getDb()
+  const dbPaths = new Set(
+    (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(r => r.path)
+  )
+  const fsPaths = new Set(files.map(f => path.relative(config.vaultPath, f).normalize('NFD')))
+  for (const dbPath of dbPaths) {
+    if (!fsPaths.has(dbPath)) {
+      deleteNote(dbPath)
+    }
+  }
 
   for (let i = 0; i < files.length; i += config.batchSize) {
     const batch = files.slice(i, i + config.batchSize)

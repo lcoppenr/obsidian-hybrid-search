@@ -281,6 +281,27 @@ export function getStats(): { total: number; indexed: number; pending: number; l
   return { total, indexed, pending: total - indexed, lastIndexed }
 }
 
+/**
+ * Returns paths of notes that should be removed because they now match ignore patterns.
+ * Stores new patterns in settings. Returns empty array if patterns unchanged.
+ */
+export function getPathsToRemoveForIgnoreChange(patterns: string[]): string[] {
+  const db = getDb()
+  const key = 'ignore_patterns'
+  const stored = db.prepare(`SELECT value FROM settings WHERE key = '${key}'`).get() as { value: string } | undefined
+  const newJson = JSON.stringify([...patterns].sort())
+
+  if (stored && stored.value === newJson) return []
+
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${key}', ?)`).run(newJson)
+
+  if (!stored) return [] // first run — nothing to remove
+
+  // Return all DB paths that match the new ignore patterns
+  const allPaths = (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(r => r.path)
+  return allPaths
+}
+
 export function saveConfigMeta(meta: { vaultPath: string; apiBaseUrl: string; apiModel: string }): void {
   const db = getDb()
   const set = db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
