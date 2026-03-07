@@ -1,0 +1,226 @@
+import Database from 'better-sqlite3'
+import * as sqliteVec from 'sqlite-vec'
+import { config } from './config.js'
+
+export type DB = InstanceType<typeof Database>
+
+let _db: DB | null = null
+
+export function openDb(): DB {
+  const db = new Database(config.dbPath)
+  sqliteVec.load(db)
+
+  db.pragma('journal_mode = WAL')
+  db.pragma('foreign_keys = ON')
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id      INTEGER PRIMARY KEY,
+      path    TEXT UNIQUE NOT NULL,
+      title   TEXT,
+      tags    TEXT,
+      content TEXT,
+      mtime   REAL,
+      hash    TEXT
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts_bm25 USING fts5(
+      title, content,
+      content='notes', content_rowid='id',
+      tokenize = 'unicode61'
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts_fuzzy USING fts5(
+      title,
+      content='notes', content_rowid='id',
+      tokenize = 'trigram'
+    );
+
+    CREATE TABLE IF NOT EXISTS chunks (
+      id          INTEGER PRIMARY KEY,
+      note_id     INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      chunk_index INTEGER NOT NULL,
+      text        TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts_bm25(rowid, title, content) VALUES (new.id, new.title, new.content);
+      INSERT INTO notes_fts_fuzzy(rowid, title) VALUES (new.id, new.title);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts_bm25(notes_fts_bm25, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+      INSERT INTO notes_fts_bm25(rowid, title, content) VALUES (new.id, new.title, new.content);
+      INSERT INTO notes_fts_fuzzy(notes_fts_fuzzy, rowid, title) VALUES('delete', old.id, old.title);
+      INSERT INTO notes_fts_fuzzy(rowid, title) VALUES (new.id, new.title);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts_bm25(notes_fts_bm25, rowid, title, content) VALUES('delete', old.id, old.title, old.content);
+      INSERT INTO notes_fts_fuzzy(notes_fts_fuzzy, rowid, title) VALUES('delete', old.id, old.title);
+    END;
+  `)
+
+  _db = db
+  return db
+}
+
+export function getDb(): DB {
+  if (!_db) throw new Error('Database not initialized. Call openDb() first.')
+  return _db
+}
+
+export function initVecTable(dim: number): void {
+  const db = getDb()
+
+  const stored = db.prepare("SELECT value FROM settings WHERE key = 'embedding_dim'").get() as { value: string } | undefined
+  const storedDim = stored ? parseInt(stored.value) : null
+
+  const vecExists = db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'"
+  ).get()
+
+  if (vecExists && storedDim === dim) return
+
+  if (vecExists) {
+    db.exec('DROP TABLE IF EXISTS vec_chunks')
+    // Clear chunks too since vectors are gone
+    db.exec('DELETE FROM chunks')
+  }
+
+  db.exec(`CREATE VIRTUAL TABLE vec_chunks USING vec0(
+    chunk_id INTEGER PRIMARY KEY,
+    embedding float[${dim}]
+  )`)
+
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_dim', ?)").run(String(dim))
+}
+
+export function hasVecTable(): boolean {
+  const db = getDb()
+  return !!db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'").get()
+}
+
+export interface NoteMeta {
+  mtime: number
+  hash: string
+}
+
+export interface NoteRow {
+  id: number
+  path: string
+  title: string
+  tags: string
+  content: string
+  mtime: number
+  hash: string
+}
+
+export function getNoteMeta(path: string): NoteMeta | undefined {
+  const db = getDb()
+  return db.prepare('SELECT mtime, hash FROM notes WHERE path = ?').get(path) as NoteMeta | undefined
+}
+
+export function getNoteByPath(path: string): NoteRow | undefined {
+  const db = getDb()
+  return db.prepare('SELECT * FROM notes WHERE path = ?').get(path) as NoteRow | undefined
+}
+
+export function upsertNote(note: {
+  path: string
+  title: string
+  tags: string[]
+  content: string
+  mtime: number
+  hash: string
+  chunks: { text: string; embedding: Float32Array }[]
+}): void {
+  const db = getDb()
+
+  const existing = db.prepare('SELECT id FROM notes WHERE path = ?').get(note.path) as { id: number } | undefined
+
+  if (existing) {
+    // Delete existing chunk vectors before cascade-deleting chunks
+    const chunkIds = db.prepare('SELECT id FROM chunks WHERE note_id = ?').all(existing.id) as { id: number }[]
+    for (const { id } of chunkIds) {
+      db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(id)
+    }
+
+    db.prepare(`
+      UPDATE notes SET title = ?, tags = ?, content = ?, mtime = ?, hash = ?
+      WHERE path = ?
+    `).run(note.title, JSON.stringify(note.tags), note.content, note.mtime, note.hash, note.path)
+
+    db.prepare('DELETE FROM chunks WHERE note_id = ?').run(existing.id)
+
+    const noteId = existing.id
+    insertChunks(db, noteId, note.chunks)
+  } else {
+    const result = db.prepare(`
+      INSERT INTO notes (path, title, tags, content, mtime, hash)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(note.path, note.title, JSON.stringify(note.tags), note.content, note.mtime, note.hash)
+
+    const noteId = result.lastInsertRowid as number
+    insertChunks(db, noteId, note.chunks)
+  }
+}
+
+function insertChunks(
+  db: DB,
+  noteId: number,
+  chunks: { text: string; embedding: Float32Array }[]
+): void {
+  const insertChunk = db.prepare(
+    'INSERT INTO chunks (note_id, chunk_index, text) VALUES (?, ?, ?)'
+  )
+  const insertVec = db.prepare(
+    'INSERT INTO vec_chunks (chunk_id, embedding) VALUES (?, ?)'
+  )
+
+  for (let i = 0; i < chunks.length; i++) {
+    const { text, embedding } = chunks[i]
+    const result = insertChunk.run(noteId, i, text)
+    // sqlite-vec vec0 requires INTEGER (BigInt), not REAL (JS number)
+    const chunkId = BigInt(result.lastInsertRowid)
+    insertVec.run(chunkId, embedding)
+  }
+}
+
+export function deleteNote(notePath: string): void {
+  const db = getDb()
+  const note = db.prepare('SELECT id FROM notes WHERE path = ?').get(notePath) as { id: number } | undefined
+  if (!note) return
+
+  const chunkIds = db.prepare('SELECT id FROM chunks WHERE note_id = ?').all(note.id) as { id: number }[]
+  for (const { id } of chunkIds) {
+    db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(id)
+  }
+
+  db.prepare('DELETE FROM notes WHERE id = ?').run(note.id)
+}
+
+export function getStats(): { total: number; indexed: number; pending: number; lastIndexed: string | null } {
+  const db = getDb()
+  const total = (db.prepare('SELECT COUNT(*) as c FROM notes').get() as { c: number }).c
+  const indexed = (db.prepare(
+    'SELECT COUNT(DISTINCT note_id) as c FROM chunks'
+  ).get() as { c: number }).c
+  const lastIndexed = (db.prepare(
+    "SELECT value FROM settings WHERE key = 'last_indexed'"
+  ).get() as { value: string } | undefined)?.value ?? null
+
+  return { total, indexed, pending: total - indexed, lastIndexed }
+}
+
+export function updateLastIndexed(): void {
+  const db = getDb()
+  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_indexed', ?)").run(
+    new Date().toISOString()
+  )
+}
