@@ -579,7 +579,8 @@ export async function search(
 		// Snippet fallback for results with empty snippets; cap all to snippetLength
 		for (const r of related) {
 			if (!r.snippet) r.snippet = getSnippetFallback(r.path, snippetLength)
-			if (r.snippet.length > snippetLength) r.snippet = r.snippet.slice(0, snippetLength)
+			if (r.snippet.length > snippetLength)
+				r.snippet = r.snippet.slice(0, snippetLength)
 		}
 		searchCache.set(key, related)
 		return related
@@ -615,7 +616,8 @@ export async function search(
 	const final = results.map(r => {
 		const sr = toSearchResult(r)
 		if (!sr.snippet) sr.snippet = getSnippetFallback(sr.path, snippetLength)
-		if (sr.snippet.length > snippetLength) sr.snippet = sr.snippet.slice(0, snippetLength)
+		if (sr.snippet.length > snippetLength)
+			sr.snippet = sr.snippet.slice(0, snippetLength)
 		return {
 			...sr,
 			links: links.get(sr.path) ?? [],
