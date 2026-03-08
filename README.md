@@ -26,7 +26,25 @@ npx obsidian-hybrid-search
 
 ## CLI usage
 
-Run from inside your vault directory — the tool auto-discovers the database.
+The tool auto-discovers the database by walking up from the current directory looking for `.obsidian-hybrid-search.db`. The simplest way to use it — run from inside your vault:
+
+```bash
+cd /path/to/your/vault
+obsidian-hybrid-search "zettelkasten"
+```
+
+If you want to run it from anywhere (e.g. via shell aliases), set the environment variables explicitly. Add to your `~/.zshrc` or `~/.bashrc`:
+
+```bash
+export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
+
+# Optional — only needed if using a remote embedding API instead of local model
+export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
+export OPENAI_EMBEDDING_MODEL="openai/text-embedding-3-small"
+```
+
+Without `OPENAI_API_KEY` the local `Xenova/all-MiniLM-L6-v2` model is used automatically (no API key needed, ~50 MB download on first run).
 
 ```bash
 # Hybrid search (default)
@@ -117,7 +135,7 @@ Add to your Claude MCP config (`.mcp.json` or `claude_desktop_config.json`):
   "mcpServers": {
     "obsidian-hybrid-search": {
       "command": "npx",
-      "args": ["-y", "-p", "obsidian-hybrid-search", "obsidian-hybrid-search-mcp"],
+      "args": ["-y", "obsidian-hybrid-search"],
       "env": {
         "OBSIDIAN_VAULT_PATH": "/path/to/your/vault",
         "OBSIDIAN_IGNORE_PATTERNS": ".obsidian/**,templates/**,*.canvas",
