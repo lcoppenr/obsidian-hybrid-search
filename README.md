@@ -40,8 +40,11 @@ export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
 
 # Optional — only needed if using a remote embedding API instead of local model
 export OPENAI_API_KEY="sk-..."
-export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
-export OPENAI_EMBEDDING_MODEL="openai/text-embedding-3-small"
+# Default API base is https://api.openai.com/v1 — override for other providers:
+# export OPENAI_BASE_URL="https://openrouter.ai/api/v1"  # OpenRouter
+# export OPENAI_BASE_URL="http://localhost:11434/v1"      # Ollama (no key needed)
+# export OPENAI_BASE_URL="http://localhost:1234/v1"       # LM Studio (no key needed)
+export OPENAI_EMBEDDING_MODEL="text-embedding-3-small"
 ```
 
 Without `OPENAI_API_KEY` the local `Xenova/all-MiniLM-L6-v2` model is used automatically (no API key needed, ~50 MB download on first run).
@@ -144,8 +147,7 @@ Add to your Claude MCP config (`.mcp.json` or `claude_desktop_config.json`):
         "OBSIDIAN_VAULT_PATH": "/path/to/your/vault",
         "OBSIDIAN_IGNORE_PATTERNS": ".obsidian/**,templates/**,*.canvas",
         "OPENAI_API_KEY": "sk-...",
-        "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
-        "OPENAI_EMBEDDING_MODEL": "openai/text-embedding-3-small"
+        "OPENAI_EMBEDDING_MODEL": "text-embedding-3-small"
       }
     }
   }
@@ -170,9 +172,9 @@ The server exposes three tools:
 |----------------------|---------|-------------|
 | `OBSIDIAN_VAULT_PATH` | *(required)* | Absolute path to your vault |
 | `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns |
-| `OPENAI_API_KEY` | — | API key (omit for local embeddings) |
-| `OPENAI_BASE_URL` | `https://openrouter.ai/api/v1` | API base URL |
-| `OPENAI_EMBEDDING_MODEL` | `openai/text-embedding-3-small` | Embedding model name |
+| `OPENAI_API_KEY` | — | API key; omit to use local Xenova embeddings or keyless servers (Ollama, LM Studio) |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | API base URL |
+| `OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model name |
 
 ### Ignore patterns
 

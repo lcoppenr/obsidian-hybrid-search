@@ -16,10 +16,10 @@ export const config = {
     return process.env.OPENAI_API_KEY
   },
   get apiBaseUrl(): string {
-    return process.env.OPENAI_BASE_URL ?? 'https://openrouter.ai/api/v1'
+    return process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1'
   },
   get apiModel(): string {
-    return process.env.OPENAI_EMBEDDING_MODEL ?? 'openai/text-embedding-3-small'
+    return process.env.OPENAI_EMBEDDING_MODEL ?? 'text-embedding-3-small'
   },
   get dbPath(): string {
     const v = process.env.OBSIDIAN_VAULT_PATH
