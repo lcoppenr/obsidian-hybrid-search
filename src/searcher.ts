@@ -10,9 +10,9 @@ export interface SearchResult {
   links: string[]
   backlinks: string[]
   scores: {
-    semantic?: number
-    bm25?: number
-    fuzzy_title?: number
+    semantic: number | null
+    bm25: number | null
+    fuzzy_title: number | null
   }
 }
 
@@ -29,7 +29,11 @@ interface RawResult {
   tags: string
   snippet: string
   score: number
-  scores: SearchResult['scores']
+  scores: {
+    semantic?: number
+    bm25?: number
+    fuzzy_title?: number
+  }
 }
 
 function applyScope(results: RawResult[], scope?: string): RawResult[] {
@@ -49,7 +53,17 @@ function toSearchResult(r: RawResult): SearchResult {
   } catch {
     tags = []
   }
-  return { ...r, tags, links: [], backlinks: [] }
+  return {
+    ...r,
+    tags,
+    links: [],
+    backlinks: [],
+    scores: {
+      semantic: r.scores.semantic ?? null,
+      bm25: r.scores.bm25 ?? null,
+      fuzzy_title: r.scores.fuzzy_title ?? null,
+    },
+  }
 }
 
 function sanitizeFtsQuery(query: string): string {

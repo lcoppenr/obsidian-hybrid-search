@@ -95,15 +95,15 @@ ohsst                                     # show status
 Hybrid search returns a table with scores and snippets:
 
 ```
-┌───────┬─────────────────────────────────────────────┬────────────────────────────────────────────┐
-│ SCORE │ PATH                                        │ SNIPPET                                    │
-├───────┼─────────────────────────────────────────────┼────────────────────────────────────────────┤
-│  0.98 │ notes/pkm/zettelkasten.md                   │ A note-taking method developed by Niklas   │
-│       │                                             │ Luhmann. Each note contains one atomic...  │
-├───────┼─────────────────────────────────────────────┼────────────────────────────────────────────┤
-│  0.72 │ notes/pkm/evergreen-notes.md                │ Evergreen notes are written to evolve over │
-│       │                                             │ time. Unlike fleeting notes, they are...   │
-└───────┴─────────────────────────────────────────────┴────────────────────────────────────────────┘
+┌───────┬───────────────────────────────┬────────────────────────────────────────────┐
+│ SCORE │ PATH                          │ SNIPPET                                    │
+├───────┼───────────────────────────────┼────────────────────────────────────────────┤
+│  0.98 │ notes/pkm/zettelkasten.md     │ A note-taking method developed by Niklas   │
+│       │                               │ Luhmann. Each note contains one atomic...  │
+├───────┼───────────────────────────────┼────────────────────────────────────────────┤
+│  0.72 │ notes/pkm/evergreen-notes.md  │ Evergreen notes are written to evolve over │
+│       │                               │ time. Unlike fleeting notes, they are...   │
+└───────┴───────────────────────────────┴────────────────────────────────────────────┘
 ```
 
 Title mode omits the snippet column automatically.
@@ -117,7 +117,7 @@ Add to your Claude MCP config (`.mcp.json` or `claude_desktop_config.json`):
   "mcpServers": {
     "obsidian-hybrid-search": {
       "command": "npx",
-      "args": ["tsx", "/path/to/obsidian-hybrid-search/src/server.ts"],
+      "args": ["-y", "-p", "obsidian-hybrid-search", "obsidian-hybrid-search-mcp"],
       "env": {
         "OBSIDIAN_VAULT_PATH": "/path/to/your/vault",
         "OBSIDIAN_IGNORE_PATTERNS": ".obsidian/**,templates/**,*.canvas",
@@ -131,6 +131,8 @@ Add to your Claude MCP config (`.mcp.json` or `claude_desktop_config.json`):
 ```
 
 Omit `OPENAI_API_KEY` to use the local `Xenova/all-MiniLM-L6-v2` model (downloads ~50 MB on first run).
+
+> **Note:** On first run, `npx` will install the package automatically. Ignore patterns are persisted in the database and restored on every subsequent startup even if the env var is missing.
 
 The server exposes three tools:
 
