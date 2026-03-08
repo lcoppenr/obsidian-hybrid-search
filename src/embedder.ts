@@ -118,15 +118,23 @@ async function embedApiBatchWithFallback(texts: string[]): Promise<Float32Array[
     return await embedApiBatch(texts)
   } catch (batchErr) {
     if (texts.length === 1) {
-      // Single item still fails — try with truncated text
-      const truncated = texts[0].slice(0, 2000)
-      if (truncated === texts[0]) throw batchErr
-      try {
-        console.warn('[embedder] chunk too large, retrying truncated')
-        return await embedApiBatch([truncated])
-      } catch {
-        throw batchErr
+      // Try with progressively shorter truncations
+      for (const limit of [2000, 1000, 500]) {
+        const truncated = texts[0].slice(0, limit)
+        if (truncated === texts[0]) continue // already shorter, no point retrying
+        try {
+          console.warn(`[embedder] chunk failing, retrying at ${limit} chars`)
+          return await embedApiBatch([truncated])
+        } catch {
+          // try next truncation level
+        }
       }
+      // All truncations failed — use zero vector so the note still indexes for BM25
+      if (cachedDim !== null) {
+        console.warn('[embedder] chunk unembeddable, using zero vector (note still indexed for text search)')
+        return [new Float32Array(cachedDim)]
+      }
+      throw batchErr
     }
     // Batch failed — retry each item individually
     console.warn('[embedder] batch failed, retrying one by one:', (batchErr as Error).message)
