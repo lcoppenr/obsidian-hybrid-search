@@ -154,6 +154,13 @@ async function getLocalPipeline() {
   return localPipeline
 }
 
+// Ollama queues requests internally — parallel batches don't help and can crash
+// buggy versions (v0.12.5+ bug: requests >2KB crash the server).
+function isOllamaEndpoint(): boolean {
+  const url = config.apiBaseUrl.toLowerCase()
+  return url.includes('11434') || url.includes('ollama')
+}
+
 export async function embed(texts: string[]): Promise<Float32Array[]> {
   if (config.apiKey) {
     return embedViaApi(texts)
@@ -164,8 +171,12 @@ export async function embed(texts: string[]): Promise<Float32Array[]> {
 async function embedViaApi(texts: string[]): Promise<Float32Array[]> {
   const results: Float32Array[] = []
 
-  for (let i = 0; i < texts.length; i += config.batchSize) {
-    const batch = texts.slice(i, i + config.batchSize)
+  // Ollama: send one at a time to avoid the >2KB crash bug in v0.12.5+
+  // and because Ollama queues internally anyway (batching gives no speedup)
+  const batchSize = isOllamaEndpoint() ? 1 : config.batchSize
+
+  for (let i = 0; i < texts.length; i += batchSize) {
+    const batch = texts.slice(i, i + batchSize)
     const batchResults = await embedApiBatchWithFallback(batch)
     results.push(...batchResults)
   }

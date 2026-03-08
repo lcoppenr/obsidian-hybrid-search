@@ -107,7 +107,12 @@ export async function indexFile(
       return 'skipped'
     }
 
-    const embeddings = await embed(chunks.map(c => c.text))
+    // Prepend title to first chunk — improves semantic recall for the note as a whole
+    // (idea from obsidian-similar-notes plugin)
+    const textsToEmbed = chunks.map((c, i) =>
+      i === 0 && title ? `${title}\n${c.text}` : c.text
+    )
+    const embeddings = await embed(textsToEmbed)
 
     upsertNote({
       path: relPath,

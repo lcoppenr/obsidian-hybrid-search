@@ -244,12 +244,51 @@ function rrfFusion(lists: RawResult[][], k = 60): RawResult[] {
     .map(({ rrfScore, result }) => ({ ...result, score: rrfScore / maxPossibleScore }))
 }
 
+// ─── LRU cache ───────────────────────────────────────────
+// Avoids redundant searches when the same query is repeated (common in MCP usage).
+// Path-based lookups are cached by path:mtime so stale entries auto-invalidate.
+
+class LRUCache<V> {
+  private map = new Map<string, V>()
+  constructor(private maxSize: number) {}
+
+  get(key: string): V | undefined {
+    const val = this.map.get(key)
+    if (val !== undefined) {
+      this.map.delete(key)
+      this.map.set(key, val)
+    }
+    return val
+  }
+
+  set(key: string, val: V): void {
+    if (this.map.has(key)) this.map.delete(key)
+    else if (this.map.size >= this.maxSize) this.map.delete(this.map.keys().next().value!)
+    this.map.set(key, val)
+  }
+}
+
+const searchCache = new LRUCache<SearchResult[]>(20)
+
+function cacheKey(input: string, options: SearchOptions): string {
+  return `${input}\0${options.mode ?? ''}\0${options.scope ?? ''}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${options.tag ?? ''}`
+}
+
 export async function search(input: string, options: SearchOptions = {}): Promise<SearchResult[]> {
   const mode = options.mode ?? 'hybrid'
   const limit = options.limit ?? 10
   const threshold = options.threshold ?? 0.0
 
   const isPathLookup = input.includes('/') || input.endsWith('.md')
+
+  // For path lookups, include mtime in cache key so stale entries auto-invalidate
+  let key = cacheKey(input, options)
+  if (isPathLookup) {
+    const note = getNoteByPath(input.normalize('NFD'))
+    if (note) key += `\0${note.mtime}`
+  }
+  const cached = searchCache.get(key)
+  if (cached) return cached
 
   let results: RawResult[]
 
@@ -267,11 +306,13 @@ export async function search(input: string, options: SearchOptions = {}): Promis
   const paths = results.map(r => r.path)
   const { links, backlinks } = getLinksForPaths(paths)
 
-  return results.map(r => ({
+  const final = results.map(r => ({
     ...toSearchResult(r),
     links: links.get(r.path) ?? [],
     backlinks: backlinks.get(r.path) ?? [],
   }))
+  searchCache.set(key, final)
+  return final
 }
 
 async function searchByQuery(query: string, mode: string, limit: number): Promise<RawResult[]> {

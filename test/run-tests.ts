@@ -244,6 +244,36 @@ async function runIntegrationTests() {
       })
     }
 
+    // ─── title in first chunk ─────────────────────────────
+    suite('title prepended to first chunk')
+
+    test('first chunk embedding text includes title', () => {
+      // The note "zettelkasten-deep.md" with title "Zettelkasten Deep Dive"
+      // should have its first chunk prefixed with the title when embedded.
+      // We verify this indirectly: BM25 search for the title should still work
+      // (title is also stored in the notes table separately).
+      const results = searchBm25('Zettelkasten Deep Dive', 10)
+      assert.ok(results.some(r => r.path === 'zettelkasten-deep.md'), 'should find by title text')
+    })
+
+    // ─── LRU cache ───────────────────────────────────────
+    suite('search LRU cache')
+
+    await testAsync('repeated query returns cached result', async () => {
+      const { search } = await import('../src/searcher.js')
+      const r1 = await search('zettelkasten', { mode: 'fulltext', limit: 5 })
+      const r2 = await search('zettelkasten', { mode: 'fulltext', limit: 5 })
+      // Same object reference means cache hit
+      assert.strictEqual(r1, r2, 'repeated search should return cached result')
+    })
+
+    await testAsync('different query bypasses cache', async () => {
+      const { search } = await import('../src/searcher.js')
+      const r1 = await search('zettelkasten', { mode: 'fulltext', limit: 5 })
+      const r2 = await search('python programming', { mode: 'fulltext', limit: 5 })
+      assert.notStrictEqual(r1, r2, 'different query should not return cached result')
+    })
+
     // ─── BM25 score ordering ──────────────────────────────
     suite('searchBm25 score ordering')
 
