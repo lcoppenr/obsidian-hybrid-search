@@ -210,8 +210,19 @@ export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
   }
 }
 
+function isZeroVector(v: Float32Array): boolean {
+  for (let i = 0; i < v.length; i++) {
+    if (v[i] !== 0) return false;
+  }
+  return true;
+}
+
 async function searchVector(queryEmbedding: Float32Array, limit: number): Promise<RawResult[]> {
   if (!hasVecTable()) return [];
+  // Zero vector means the embedding API failed and returned the fallback (see embedder.ts).
+  // A zero query gives distance=1.0 to every stored unit-vector — meaningless uniform scores.
+  // Return empty so RRF falls back to BM25+fuzzy instead of polluting results.
+  if (isZeroVector(queryEmbedding)) return [];
 
   const db = getDb();
 
@@ -604,7 +615,10 @@ async function searchSimilar(notePath: string, limit: number): Promise<RawResult
   // Embed a representative portion of the note
   const textToEmbed = note.content.slice(0, 2000);
   const [embedding] = await embed([textToEmbed]);
-  const results = await searchVector(new Float32Array(embedding!), limit + 1);
+  const embArray = new Float32Array(embedding!);
+  // Zero vector means API failed — no semantic results rather than uniform garbage
+  if (isZeroVector(embArray)) return [];
+  const results = await searchVector(embArray, limit + 1);
 
   // Exclude the source note
   return results.filter((r) => r.path !== notePath).slice(0, limit);
