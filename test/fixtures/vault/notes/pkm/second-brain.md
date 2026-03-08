@@ -24,4 +24,4 @@ Express your knowledge by creating artifacts: essays, presentations, projects.
 
 ## Relationship to Zettelkasten
 
-Both systems aim to externalize knowledge. Zettelkasten focuses on emergent connections between atomic notes, while Second Brain focuses on project-oriented organization and output.
+Both systems aim to externalize knowledge. [[zettelkasten]] focuses on emergent connections between atomic notes, while Second Brain focuses on project-oriented organization and output. See also [[evergreen-notes]] for the principle of notes that evolve over time.

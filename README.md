@@ -8,9 +8,12 @@ Works as an [MCP server](https://modelcontextprotocol.io) for Claude and other A
 
 - **Hybrid search** — BM25 + fuzzy title + semantic embeddings, fused with RRF
 - **Four search modes** — `hybrid`, `semantic`, `fulltext`, `title`
-- **Similar note lookup** — pass a path to find semantically related notes
+- **Similar note lookup** — pass `--path` to find semantically related notes
+- **Graph traversal** — `--related` shows linked notes at configurable depth; filter by `--direction outgoing|backlinks|both`
 - **Links & backlinks** — every result includes outgoing links and backlinks
-- **Scope filtering** — restrict search to a subfolder
+- **Scope filtering** — restrict to subfolder(s); supports multiple values and exclusions (`-notes/dev/`)
+- **Tag filtering** — filter by tag(s); supports multiple values and exclusions (`-category/cs`)
+- **Snippet control** — `--snippet-length` sets the context window; empty snippets always fall back to note content
 - **Incremental indexing** — only re-indexes changed files; watches for edits in real time
 - **Local embeddings** — works offline via `@xenova/transformers` (no API key required)
 - **Remote embeddings** — OpenAI-compatible API (OpenRouter, Ollama, etc.)
@@ -56,7 +59,7 @@ obsidian-hybrid-search "zettelkasten atomic notes"
 # Fulltext BM25 search
 obsidian-hybrid-search "permanent notes" --mode fulltext
 
-# Fuzzy title search (fast, no snippets)
+# Fuzzy title search (fast, typo-tolerant)
 obsidian-hybrid-search "zettleksten" --mode title
 
 # Semantic / vector search
@@ -68,17 +71,35 @@ obsidian-hybrid-search "productivity systems" --limit 5 --threshold 0.3
 # Restrict to a subfolder
 obsidian-hybrid-search "daily review" --scope notes/periodic/
 
-# Filter by tag (frontmatter tags and inline #tags are both indexed)
+# Restrict to multiple subfolders (OR)
+obsidian-hybrid-search "productivity" --scope notes/pkm/ --scope notes/projects/
+
+# Exclude a subfolder
+obsidian-hybrid-search "programming" --scope notes/ --scope -notes/archive/
+
+# Filter by tag
 obsidian-hybrid-search "productivity" --tag pkm
 obsidian-hybrid-search "machine learning" --tag note/basic/primary
 
-# Find semantically similar notes (default for path input)
-obsidian-hybrid-search "notes/pkm/zettelkasten.md"
+# Filter by multiple tags (OR include, exclude with -)
+obsidian-hybrid-search "learning" --tag pkm --tag -draft
+
+# Find semantically similar notes
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md
 
 # Graph traversal: show notes linked to/from this note
 # Results show depth: -1/-2 = backlinks, 0 = source, +1/+2 = outgoing links
-obsidian-hybrid-search "notes/pkm/zettelkasten.md" --related
-obsidian-hybrid-search "notes/pkm/zettelkasten.md" --related --depth 2
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --depth 2
+
+# Only outgoing links (what this note references)
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --direction outgoing
+
+# Only backlinks (who references this note)
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --direction backlinks
+
+# Longer context around each link
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --snippet-length 500
 
 # JSON output (for scripting)
 obsidian-hybrid-search "spaced repetition" --json
@@ -167,7 +188,7 @@ The server exposes three tools:
 
 | Tool | Description |
 |------|-------------|
-| `search` | Search the vault with optional `mode`, `scope`, `limit`, `threshold`, `tag`, `related`, `depth` |
+| `search` | Search the vault. Use `query` for text search or `path` for similarity/graph lookup. Supports `mode`, `scope`, `tag`, `limit`, `threshold`, `related`, `depth`, `direction`, `snippet_length` |
 | `reindex` | Reindex the vault or a specific file |
 | `status` | Show total notes, indexed count, last indexed time |
 
@@ -204,7 +225,7 @@ npm test          # run test suite
 npm run build     # compile TypeScript
 ```
 
-Tests use fake embeddings (no API key required) and run against a temporary vault. All 25 tests cover chunking, BM25 scoring, fuzzy search, links/backlinks, `deleteNote` semantics, and ignore pattern matching.
+Tests use fake embeddings (no API key required) and run against a temporary vault. All tests cover chunking, BM25 scoring, fuzzy search, links/backlinks, tag filtering, scope filtering, related-mode traversal, direction/score logic, snippet fallback, and ignore pattern matching.
 
 ## License
 
