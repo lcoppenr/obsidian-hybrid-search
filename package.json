@@ -12,6 +12,10 @@
     "test": "tsx test/run-tests.ts",
     "test:integration": "tsx test/integration.test.ts"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flowing-abyss/obsidian-hybrid-search"
+  },
   "files": [
     "dist/src",
     "README.md"
