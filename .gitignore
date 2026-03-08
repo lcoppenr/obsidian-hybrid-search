@@ -5,3 +5,4 @@ dist/
 *.db-wal
 .env
 .mcp.json
+.obsidian-hybrid-search.db
