@@ -11,7 +11,7 @@
     "build": "tsc",
     "dev": "tsx src/server.ts",
     "test": "vitest run",
-    "test:integration": "vitest run test/integration.test.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "coverage": "vitest run --coverage",
     "lint": "eslint src test",
     "lint:fix": "eslint src test --fix",
