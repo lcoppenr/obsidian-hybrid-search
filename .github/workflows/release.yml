@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # needed to create GitHub Release
+      id-token: write  # needed for OIDC npm publish
 
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +30,7 @@ jobs:
         run: npm run build
 
       - name: Publish to npm
-        run: npm publish
+        run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
