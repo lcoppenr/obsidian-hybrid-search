@@ -2,7 +2,9 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import { checkModelChanged, getStats, initVecTable, openDb, saveConfigMeta } from './db.js';
 import { getContextLength, getEmbeddingDim } from './embedder.js';
@@ -14,6 +16,25 @@ import {
   startWatcher,
 } from './indexer.js';
 import { search } from './searcher.js';
+
+const { version } = JSON.parse(
+  readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8'),
+) as { version: string };
+
+async function checkForUpdates(): Promise<void> {
+  try {
+    const res = await fetch('https://registry.npmjs.org/obsidian-hybrid-search/latest');
+    if (!res.ok) return;
+    const data = (await res.json()) as { version: string };
+    if (data.version !== version) {
+      process.stderr.write(
+        `[obsidian-hybrid-search] Update available: ${version} → ${data.version}. Run: npm install -g obsidian-hybrid-search\n`,
+      );
+    }
+  } catch {
+    // network unavailable — silently ignore
+  }
+}
 
 async function main() {
   // Phase 1: open database
@@ -44,7 +65,7 @@ async function main() {
 
   // Phase 3: start MCP server — ready before indexing completes
   const server = new Server(
-    { name: 'obsidian-hybrid-search', version: '0.1.0' },
+    { name: 'obsidian-hybrid-search', version },
     { capabilities: { tools: {} } },
   );
 
@@ -227,6 +248,7 @@ async function main() {
                   recent_activity: stats.recentActivity,
                   model: config.apiKey ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
                   context_length: contextLength,
+                  version,
                 },
                 null,
                 2,
@@ -255,6 +277,8 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  checkForUpdates().catch(() => {});
 
   // Phase 4 & 5: background indexing + watcher (after server is up)
   populateMissingLinks().catch((err) => {

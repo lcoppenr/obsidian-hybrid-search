@@ -302,6 +302,7 @@ program
               ? config.apiModel
               : 'Xenova/all-MiniLM-L6-v2 (local)',
           context_length: contextLength,
+          version,
         },
         null,
         2,
