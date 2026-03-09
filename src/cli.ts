@@ -293,6 +293,8 @@ program
           total: stats.total,
           indexed: stats.indexed,
           pending: stats.pending,
+          chunks: stats.chunks,
+          links: stats.links,
           last_indexed: stats.lastIndexed,
           recent_activity: stats.recentActivity,
           model:
