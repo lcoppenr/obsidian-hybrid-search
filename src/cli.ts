@@ -296,13 +296,13 @@ program
           chunks: stats.chunks,
           links: stats.links,
           last_indexed: stats.lastIndexed,
-          recent_activity: stats.recentActivity,
           model:
             config.apiKey || process.env.OPENAI_BASE_URL
               ? config.apiModel
               : 'Xenova/all-MiniLM-L6-v2 (local)',
           context_length: contextLength,
           version,
+          recent_activity: stats.recentActivity,
         },
         null,
         2,
