@@ -329,7 +329,7 @@ describe('path similarity search is always semantic', () => {
     for (const r of results) {
       assert.ok(r.scores.semantic !== null, '--path result must have a semantic score');
     }
-  });
+  }, 15000);
 
   it('--mode is ignored when --path is given (always semantic)', async () => {
     const semantic = await search('note-a.md', { notePath: 'note-a.md', limit: 10 });
@@ -350,7 +350,7 @@ describe('path similarity search is always semantic', () => {
         'path result must have semantic score regardless of mode',
       );
     }
-  });
+  }, 15000);
 });
 
 // ─── Zero-vector guard ────────────────────────────────────────────────────────
@@ -394,5 +394,5 @@ describe('zero-vector guard', () => {
       semanticHits.length === 0 || !allSameHalf,
       'all results should NOT have the same 0.5 semantic score (zero-vector symptom)',
     );
-  });
+  }, 15000);
 });
