@@ -109,7 +109,8 @@ async function main() {
           "Use 'path' + 'related: true' to traverse the knowledge graph (outgoing links and backlinks). " +
           "Each result includes a 'rank' field (1 = best match). " +
           'Score guide: 0.5+ = strong match, 0.35–0.5 = plausible, below 0.35 = likely noise. ' +
-          'Tip: when enriching a specific note with related content, that note itself often appears as rank 1 — skip it.',
+          'Tip: when enriching a specific note with related content, that note itself often appears as rank 1 — skip it. ' +
+          'Returns: path, title, tags[], snippet, score (0-1), matchedBy[], links[], backlinks[], scores{semantic?, bm25?, fuzzy_title?}. null means no match for that type.',
         inputSchema: {
           type: 'object',
           properties: {
