@@ -173,6 +173,31 @@ function buildTrigramOrQuery(text: string): string {
   return trigrams.join(' OR ');
 }
 
+function getTrigrams(text: string): Set<string> {
+  const trigrams = new Set<string>();
+  if (text.length < 3) {
+    trigrams.add(text.toLowerCase());
+    return trigrams;
+  }
+  for (let i = 0; i <= text.length - 3; i++) {
+    trigrams.add(text.slice(i, i + 3).toLowerCase());
+  }
+  return trigrams;
+}
+
+function calculateTrigramOverlap(query: string, title: string): number {
+  const queryTrigrams = getTrigrams(query);
+  if (queryTrigrams.size === 0) return 0;
+
+  const titleTrigrams = getTrigrams(title);
+  let matchCount = 0;
+  for (const t of queryTrigrams) {
+    if (titleTrigrams.has(t)) matchCount++;
+  }
+
+  return matchCount / queryTrigrams.size;
+}
+
 export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
   const db = getDb();
   const ftsQuery = buildTrigramOrQuery(query);
@@ -197,16 +222,24 @@ export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
       rank: number;
     }>;
 
-    return rows.map((row) => ({
-      path: row.path,
-      title: row.title ?? '',
-      tags: row.tags ?? '[]',
-      snippet: '',
-      score: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
-      scores: {
-        fuzzy_title: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
-      },
-    }));
+    return rows
+      .map((row) => {
+        const overlap = calculateTrigramOverlap(query, row.title ?? '');
+        const baseScore = Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank)));
+        const adjustedScore = baseScore * overlap * overlap;
+
+        return {
+          path: row.path,
+          title: row.title ?? '',
+          tags: row.tags ?? '[]',
+          snippet: '',
+          score: adjustedScore,
+          scores: {
+            fuzzy_title: adjustedScore,
+          },
+        };
+      })
+      .filter((r) => r.score > 0);
   } catch {
     return [];
   }
