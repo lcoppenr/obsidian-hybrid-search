@@ -57,6 +57,12 @@ beforeAll(() => {
         'This is a very long content note that has many words and should produce a long snippet when searched.',
       tags: [],
     },
+    {
+      path: 'middle-match.md',
+      title: 'Middle Match',
+      content: 'Start text. '.repeat(20) + 'UNIQUEKEYWORD here. ' + 'End text. '.repeat(20),
+      tags: [],
+    },
   ];
 
   for (const n of notes) {
@@ -280,13 +286,31 @@ describe('snippetLength cap', () => {
 
   it('expands snippet to snippetLength when note has enough content', async () => {
     // long-content.md has ~100 chars of content; requesting snippetLength=80 should
-    // produce a snippet of up to 80 chars even if the BM25 window returns less.
+    // produce a snippet close to 80 chars via getSnippetFallback when BM25 returns less.
     const results = await search('long', { mode: 'fulltext', snippetLength: 80, limit: 5 });
     const r = results.find((x) => x.path === 'long-content.md');
     assert.ok(r, 'long-content.md should appear in fulltext results');
     assert.ok(
-      r.snippet.length >= 20,
-      `snippet should be substantive with snippetLength=80, got ${r.snippet.length} chars`,
+      r.snippet.length >= 50,
+      `snippet should be expanded with snippetLength=80, got ${r.snippet.length} chars`,
+    );
+  });
+
+  it('BM25 snippet respects snippetLength for context around match', async () => {
+    // middle-match.md has UNIQUEKEYWORD in the middle with ~200 chars before/after
+    // With snippetLength=200, BM25 should return context around the match
+    const results = await search('UNIQUEKEYWORD', {
+      mode: 'fulltext',
+      snippetLength: 200,
+      limit: 5,
+    });
+    const r = results.find((x) => x.path === 'middle-match.md');
+    assert.ok(r, 'middle-match.md should appear in fulltext results');
+    assert.ok(r.snippet.includes('UNIQUEKEYWORD'), `snippet should contain the match keyword`);
+    // Snippet should be truncated to snippetLength
+    assert.ok(
+      r.snippet.length <= 200,
+      `snippet length ${r.snippet.length} should not exceed snippetLength=200`,
     );
   });
 });

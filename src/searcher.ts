@@ -122,16 +122,17 @@ function toFtsQuery(query: string): string {
   return words.map((w) => `"${w}"*`).join(' OR ');
 }
 
-export function searchBm25(query: string, limit: number): RawResult[] {
+export function searchBm25(query: string, limit: number, snippetLength = 300): RawResult[] {
   const db = getDb();
   const ftsQuery = toFtsQuery(query);
+  const numTokens = Math.max(10, Math.ceil(snippetLength / 4));
 
   try {
     const rows = db
       .prepare(
         `
       SELECT n.path, n.title, n.tags,
-             snippet(notes_fts_bm25, 1, '', '', '...', 40) AS snippet,
+             snippet(notes_fts_bm25, 1, '', '', '...', ?) AS snippet,
              bm25(notes_fts_bm25) AS rank
       FROM notes_fts_bm25
       JOIN notes n ON n.id = notes_fts_bm25.rowid
@@ -140,7 +141,7 @@ export function searchBm25(query: string, limit: number): RawResult[] {
       LIMIT ?
     `,
       )
-      .all(ftsQuery, limit) as Array<{
+      .all(numTokens, ftsQuery, limit) as Array<{
       path: string;
       title: string;
       tags: string;
@@ -603,7 +604,7 @@ export async function search(input: string, options: SearchOptions = {}): Promis
   if (isPathLookup) {
     results = await searchSimilar(resolvedPath, limit);
   } else {
-    results = await searchByQuery(input, mode, limit);
+    results = await searchByQuery(input, mode, limit, snippetLength);
   }
 
   results = applyScope(results, options.scope);
@@ -634,9 +635,14 @@ export async function search(input: string, options: SearchOptions = {}): Promis
   return final;
 }
 
-async function searchByQuery(query: string, mode: string, limit: number): Promise<RawResult[]> {
+async function searchByQuery(
+  query: string,
+  mode: string,
+  limit: number,
+  snippetLength: number,
+): Promise<RawResult[]> {
   if (mode === 'fulltext') {
-    return searchBm25(query, limit);
+    return searchBm25(query, limit, snippetLength);
   }
 
   if (mode === 'title') {
@@ -656,7 +662,7 @@ async function searchByQuery(query: string, mode: string, limit: number): Promis
   // and vectorResults becomes [], so RRF degrades to BM25 + fuzzy (still useful).
   const f32 = await embedQuery(query);
   const [bm25Results, fuzzyResults, vectorResults] = await Promise.all([
-    Promise.resolve(searchBm25(query, limit)),
+    Promise.resolve(searchBm25(query, limit, snippetLength)),
     Promise.resolve(searchFuzzyTitle(query, limit)),
     f32 ? searchVector(f32, limit) : Promise.resolve([]),
   ]);
