@@ -541,6 +541,7 @@ function cacheKey(input: string, options: SearchOptions): string {
   return `${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}`;
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- primary search entry-point; complexity is inherent in the multi-mode, multi-filter pipeline
 export async function search(input: string, options: SearchOptions = {}): Promise<SearchResult[]> {
   const mode = options.mode ?? 'hybrid';
   const limit = options.limit ?? 10;
@@ -573,9 +574,12 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     if (options.tag && (!Array.isArray(options.tag) || options.tag.length > 0)) {
       related = related.filter((r) => matchesTagFilter(r.tags, options.tag!));
     }
-    // Snippet fallback for results with empty snippets; cap all to snippetLength
+    // Expand short snippets up to snippetLength, then cap
     for (const r of related) {
-      if (!r.snippet) r.snippet = getSnippetFallback(r.path, snippetLength);
+      if (!r.snippet || r.snippet.length < snippetLength) {
+        const fallback = getSnippetFallback(r.path, snippetLength);
+        if (fallback.length > r.snippet.length) r.snippet = fallback;
+      }
       if (r.snippet.length > snippetLength) r.snippet = r.snippet.slice(0, snippetLength);
     }
     related.forEach((r, i) => {
@@ -614,7 +618,10 @@ export async function search(input: string, options: SearchOptions = {}): Promis
 
   const final = results.map((r, i) => {
     const sr = toSearchResult(r);
-    if (!sr.snippet) sr.snippet = getSnippetFallback(sr.path, snippetLength);
+    if (!sr.snippet || sr.snippet.length < snippetLength) {
+      const fallback = getSnippetFallback(sr.path, snippetLength);
+      if (fallback.length > sr.snippet.length) sr.snippet = fallback;
+    }
     if (sr.snippet.length > snippetLength) sr.snippet = sr.snippet.slice(0, snippetLength);
     return {
       ...sr,

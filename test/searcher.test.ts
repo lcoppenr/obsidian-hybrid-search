@@ -277,6 +277,18 @@ describe('snippetLength cap', () => {
       );
     }
   });
+
+  it('expands snippet to snippetLength when note has enough content', async () => {
+    // long-content.md has ~100 chars of content; requesting snippetLength=80 should
+    // produce a snippet of up to 80 chars even if the BM25 window returns less.
+    const results = await search('long', { mode: 'fulltext', snippetLength: 80, limit: 5 });
+    const r = results.find((x) => x.path === 'long-content.md');
+    assert.ok(r, 'long-content.md should appear in fulltext results');
+    assert.ok(
+      r.snippet.length >= 20,
+      `snippet should be substantive with snippetLength=80, got ${r.snippet.length} chars`,
+    );
+  });
 });
 
 // ─── Path-based similarity is always semantic ────────────────────────────────

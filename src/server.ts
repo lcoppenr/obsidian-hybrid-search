@@ -40,6 +40,30 @@ async function checkForUpdates(): Promise<void> {
   }
 }
 
+/**
+ * Parses a value that should be string | string[].
+ * Some LLMs serialize arrays as JSON strings (e.g. `'["a","b"]'`); this handles both forms.
+ */
+// eslint-disable-next-line sonarjs/function-return-type -- union return type is intentional; callers accept string | string[] | undefined
+function parseArrayParam(val: unknown): string | string[] | undefined {
+  if (val === undefined || val === null) return undefined;
+  if (Array.isArray(val)) return val as string[];
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed.startsWith('[')) {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- JSON.parse return type is unavoidably any
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return parsed as string[];
+      } catch {
+        // not a valid JSON array — treat as plain string
+      }
+    }
+    return trimmed || undefined;
+  }
+  return undefined;
+}
+
 async function main() {
   // Phase 1: open database
   openDb();
@@ -190,10 +214,10 @@ async function main() {
         const inputStr = notePath ?? (a.query as string | undefined) ?? '';
         const results = await search(inputStr, {
           mode: a.mode as 'hybrid' | 'semantic' | 'fulltext' | 'title' | undefined,
-          scope: a.scope as string | string[] | undefined,
+          scope: parseArrayParam(a.scope),
           limit: a.limit as number | undefined,
           threshold: a.threshold as number | undefined,
-          tag: a.tag as string | string[] | undefined,
+          tag: parseArrayParam(a.tag),
           related: a.related as boolean | undefined,
           depth: a.depth as number | undefined,
           direction: a.direction as 'outgoing' | 'backlinks' | 'both' | undefined,
