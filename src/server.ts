@@ -96,7 +96,10 @@ async function main() {
             },
             tag: {
               description:
-                'Filter by tag(s). String or array. Prefix with "-" to exclude, e.g. ["-category/cs", "note/basic/primary"]',
+                'Filter by tag(s). String or array. Prefix with "-" to exclude. ' +
+                'Include array = OR logic (note matches any of the tags). ' +
+                'Exclude array = AND logic (note must not have any of them). ' +
+                'E.g. ["note/basic/primary", "-category/cs"] returns primary notes outside cs.',
               oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
             },
             related: {
@@ -117,7 +120,8 @@ async function main() {
             snippet_length: {
               type: 'number',
               description:
-                'Max snippet length in characters (default: 300). Controls context window for link snippets and fallback text.',
+                'Max snippet length in characters (default: 300). ' +
+                'Increase to 600-1000 for aggregator/index notes where more surrounding context is needed.',
             },
           },
         },
