@@ -294,6 +294,7 @@ program
           indexed: stats.indexed,
           pending: stats.pending,
           last_indexed: stats.lastIndexed,
+          recent_activity: stats.recentActivity,
           model:
             config.apiKey || process.env.OPENAI_BASE_URL
               ? config.apiModel
