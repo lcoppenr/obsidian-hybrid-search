@@ -5,10 +5,8 @@ export default defineConfig({
     env: {
       VAULT_PATH: '/tmp/test-vault',
     },
-    pool: 'threads',
-    poolOptions: {
-      threads: { singleThread: true },
-    },
+    maxWorkers: 1,
+    isolate: false,
     include: ['test/**/*.test.ts'],
     exclude: ['test/integration.test.ts'],
     coverage: {
