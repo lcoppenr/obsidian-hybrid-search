@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { config } from './config.js';
 import { getStats, getStoredEmbeddingDim, initVecTable, openDb } from './db.js';
 import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
-import { indexFile, indexVaultSync } from './indexer.js';
+import { getIndexingStatus, indexFile, indexVaultSync } from './indexer.js';
 import { search } from './searcher.js';
 
 const execAsync = promisify(exec);
@@ -358,13 +358,14 @@ program
   .action(async () => {
     const contextLength = await init();
     const stats = getStats();
+    const indexingStatus = getIndexingStatus();
     console.log(
       JSON.stringify(
         {
           vault: config.vaultPath,
           total: stats.total,
           indexed: stats.indexed,
-          pending: stats.pending,
+          pending: stats.pending + indexingStatus.queued,
           chunks: stats.chunks,
           links: stats.links,
           last_indexed: stats.lastIndexed,

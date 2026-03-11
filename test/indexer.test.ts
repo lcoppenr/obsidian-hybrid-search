@@ -10,7 +10,8 @@ const vaultDir = mkdtempSync(path.join(tmpdir(), 'ohs-indexer-test-'));
 process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 
 // Dynamic imports so config reads the env var we just set
-const { parseInlineTags, parseWikilinks, resolveWikilinks } = await import('../src/indexer.js');
+const { parseInlineTags, parseWikilinks, resolveWikilinks, getIndexingStatus } =
+  await import('../src/indexer.js');
 const { openDb, initVecTable, upsertNote } = await import('../src/db.js');
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -35,6 +36,21 @@ function insertNote(opts: {
     chunks: [{ text: opts.content ?? opts.title, embedding: fakeEmbedding }],
   });
 }
+
+// ─── getIndexingStatus ────────────────────────────────────────────────────────
+
+describe('getIndexingStatus', () => {
+  it('returns correct shape with idle defaults when no indexing is running', () => {
+    const status = getIndexingStatus();
+    assert.equal(typeof status.queued, 'number');
+    assert.equal(typeof status.total, 'number');
+    assert.equal(typeof status.processed, 'number');
+    assert.equal(typeof status.isRunning, 'boolean');
+    assert.equal(status.isRunning, false);
+    assert.equal(status.queued, 0);
+    assert.equal(status.processed, 0);
+  });
+});
 
 // ─── parseInlineTags ──────────────────────────────────────────────────────────
 

@@ -16,6 +16,7 @@ import {
 } from './db.js';
 import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import {
+  getIndexingStatus,
   indexFile,
   indexVaultSync,
   populateMissingLinks,
@@ -295,6 +296,7 @@ async function main() {
 
       if (name === 'status') {
         const stats = getStats();
+        const indexingStatus = getIndexingStatus();
         return {
           content: [
             {
@@ -303,7 +305,7 @@ async function main() {
                 {
                   total: stats.total,
                   indexed: stats.indexed,
-                  pending: stats.pending,
+                  pending: stats.pending + indexingStatus.queued,
                   chunks: stats.chunks,
                   links: stats.links,
                   last_indexed: stats.lastIndexed,

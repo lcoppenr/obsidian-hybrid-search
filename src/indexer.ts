@@ -184,6 +184,14 @@ function cleanupStaleNotes(fsPaths?: Set<string>): void {
   }
 }
 
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return rem > 0 ? `${m}m ${rem}s` : `${m}m`;
+}
+
 export async function indexVaultSync(force = false): Promise<IndexResult> {
   const files = scanVault();
   const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));
@@ -192,13 +200,17 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
   const contextLength = await getContextLength();
   const result: IndexResult = { indexed: 0, skipped: 0, errors: [] };
 
-  const logInterval = Math.max(50, Math.floor(files.length / 10));
+  if (files.length === 0) {
+    await populateMissingLinks();
+    updateLastIndexed();
+    return result;
+  }
+
+  process.stderr.write(`[obsidian-hybrid-search] Indexing vault (${files.length} notes)...\n`);
+  const startTime = Date.now();
+  const logEvery = Math.max(config.batchSize, Math.floor(files.length / 10));
+
   for (let i = 0; i < files.length; i += config.batchSize) {
-    if (i > 0 && i % logInterval === 0) {
-      console.error(
-        `[indexer] ${i}/${files.length} files processed (${result.indexed} indexed, ${result.errors.length} errors)`,
-      );
-    }
     const batch = files.slice(i, i + config.batchSize);
     await Promise.all(
       batch.map(async (f) => {
@@ -212,7 +224,23 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
           });
       }),
     );
+
+    const processed = Math.min(i + config.batchSize, files.length);
+    if (processed % logEvery < config.batchSize || processed >= files.length) {
+      const pct = Math.round((processed / files.length) * 100);
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const rate = elapsedSec > 0 ? processed / elapsedSec : 0;
+      const remainingSec =
+        rate > 0 && processed < files.length ? (files.length - processed) / rate : 0;
+      const eta = remainingSec > 5 ? ` — ${formatDuration(remainingSec)} remaining` : '';
+      process.stderr.write(
+        `[obsidian-hybrid-search] ${processed}/${files.length} (${pct}%)${eta}\n`,
+      );
+    }
   }
+
+  const elapsed = formatDuration((Date.now() - startTime) / 1000);
+  process.stderr.write(`[obsidian-hybrid-search] Indexing complete in ${elapsed}\n`);
 
   await populateMissingLinks();
   updateLastIndexed();
@@ -221,16 +249,71 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
 
 const _indexQueue: string[] = [];
 let _isIndexing = false;
+let _totalExpected = 0;
+let _processedCount = 0;
+
+/**
+ * Returns the current background-indexing progress.
+ * queued  — files still waiting in the queue (not yet processed)
+ * total   — total files enqueued at the start of the current run
+ * processed — files already processed in the current run
+ * isRunning — whether a background indexing pass is active
+ *
+ * Used by the `status` tool/command to report correct `pending` counts
+ * even before files have been written to the DB (S-19 fix).
+ */
+export function getIndexingStatus(): {
+  queued: number;
+  total: number;
+  processed: number;
+  isRunning: boolean;
+} {
+  return {
+    queued: _indexQueue.length,
+    total: _totalExpected,
+    processed: _processedCount,
+    isRunning: _isIndexing,
+  };
+}
 
 async function processQueue(contextLength: number): Promise<void> {
   if (_isIndexing) return;
   _isIndexing = true;
+  const total = _totalExpected;
+  const startTime = Date.now();
+
+  if (total > 0) {
+    process.stderr.write(`[obsidian-hybrid-search] Indexing vault (${total} notes)...\n`);
+  }
+
   try {
+    const logEvery = Math.max(config.batchSize, Math.floor(total / 10));
     while (_indexQueue.length > 0) {
       const batch = _indexQueue.splice(0, config.batchSize);
       await Promise.all(batch.map((f) => indexFile(f, contextLength)));
+      _processedCount += batch.length;
+
+      if (
+        total > 0 &&
+        (_processedCount % logEvery < config.batchSize || _indexQueue.length === 0)
+      ) {
+        const pct = Math.round((_processedCount / total) * 100);
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const rate = elapsedSec > 0 ? _processedCount / elapsedSec : 0;
+        const remainingSec = rate > 0 && _indexQueue.length > 0 ? _indexQueue.length / rate : 0;
+        const eta = remainingSec > 5 ? ` — ${formatDuration(remainingSec)} remaining` : '';
+        process.stderr.write(
+          `[obsidian-hybrid-search] ${_processedCount}/${total} (${pct}%)${eta}\n`,
+        );
+      }
     }
+
     updateLastIndexed();
+
+    if (total > 0) {
+      const elapsed = formatDuration((Date.now() - startTime) / 1000);
+      process.stderr.write(`[obsidian-hybrid-search] Indexing complete in ${elapsed}\n`);
+    }
   } finally {
     _isIndexing = false;
   }
@@ -240,6 +323,8 @@ export async function startBackgroundIndexing(contextLength: number): Promise<vo
   const files = scanVault();
   const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));
   cleanupStaleNotes(fsPaths);
+  _totalExpected = files.length;
+  _processedCount = 0;
   _indexQueue.push(...files);
   processQueue(contextLength).catch((err) => {
     console.warn('[indexer] background indexing error:', err);
