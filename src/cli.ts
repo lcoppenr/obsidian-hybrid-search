@@ -353,33 +353,32 @@ program
 program
   .command('status')
   .description('Show indexing status and configuration')
-  .action(async () => {
+  .option('--recent', 'Include recent activity log')
+  .action(async (opts: { recent?: boolean }) => {
     const contextLength = await init();
     const stats = getStats();
     const indexingStatus = getIndexingStatus();
-    console.log(
-      JSON.stringify(
-        {
-          vault: config.vaultPath,
-          total: stats.total,
-          indexed: stats.indexed,
-          pending: stats.pending + indexingStatus.queued,
-          chunks: stats.chunks,
-          links: stats.links,
-          last_indexed: stats.lastIndexed,
-          ignore_patterns: config.ignorePatterns,
-          model:
-            config.apiKey || process.env.OPENAI_BASE_URL
-              ? config.apiModel
-              : 'Xenova/all-MiniLM-L6-v2 (local)',
-          context_length: contextLength,
-          version,
-          recent_activity: stats.recentActivity,
-        },
-        null,
-        2,
-      ),
-    );
+    const isRemote = Boolean(config.apiKey || process.env.OPENAI_BASE_URL);
+    const output: Record<string, unknown> = {
+      vault: config.vaultPath,
+      total: stats.total,
+      indexed: stats.indexed,
+      pending: stats.pending + indexingStatus.queued,
+      chunks: stats.chunks,
+      links: stats.links,
+      last_indexed: stats.lastIndexed,
+      db_size_mb:
+        stats.dbSizeBytes !== null ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10 : null,
+      model: isRemote ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
+      provider_url: isRemote ? config.apiBaseUrl : 'local',
+      context_length: contextLength,
+      version,
+      ignore_patterns: config.ignorePatterns,
+    };
+    if (opts.recent) {
+      output.recent_activity = stats.recentActivity;
+    }
+    console.log(JSON.stringify(output, null, 2));
   });
 
 program.parseAsync(process.argv).catch((err) => {

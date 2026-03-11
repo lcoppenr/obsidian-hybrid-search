@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { statSync } from 'node:fs';
 import * as sqliteVec from 'sqlite-vec';
 import { config } from './config.js';
 import { isIgnored } from './ignore.js';
@@ -410,6 +411,7 @@ export function getStats(): {
   chunks: number;
   links: number;
   lastIndexed: string | null;
+  dbSizeBytes: number | null;
   recentActivity: EventLogEntry[];
 } {
   const db = getDb();
@@ -429,7 +431,23 @@ export function getStats(): {
     .prepare('SELECT action, path, timestamp FROM event_log ORDER BY id DESC LIMIT 15')
     .all() as EventLogEntry[];
 
-  return { total, indexed, pending: total - indexed, chunks, links, lastIndexed, recentActivity };
+  let dbSizeBytes: number | null = null;
+  try {
+    dbSizeBytes = statSync(config.dbPath).size;
+  } catch {
+    // DB file not accessible
+  }
+
+  return {
+    total,
+    indexed,
+    pending: total - indexed,
+    chunks,
+    links,
+    lastIndexed,
+    dbSizeBytes,
+    recentActivity,
+  };
 }
 
 /**

@@ -233,7 +233,12 @@ async function main() {
         description: 'Get indexing status and configuration',
         inputSchema: {
           type: 'object',
-          properties: {},
+          properties: {
+            include_activity: {
+              type: 'boolean',
+              description: 'Include recent activity log in the response',
+            },
+          },
         },
       },
     ],
@@ -297,27 +302,32 @@ async function main() {
       if (name === 'status') {
         const stats = getStats();
         const indexingStatus = getIndexingStatus();
+        const isRemote = Boolean(config.apiKey || process.env.OPENAI_BASE_URL);
+        const output: Record<string, unknown> = {
+          total: stats.total,
+          indexed: stats.indexed,
+          pending: stats.pending + indexingStatus.queued,
+          chunks: stats.chunks,
+          links: stats.links,
+          last_indexed: stats.lastIndexed,
+          db_size_mb:
+            stats.dbSizeBytes !== null
+              ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10
+              : null,
+          model: isRemote ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
+          provider_url: isRemote ? config.apiBaseUrl : 'local',
+          context_length: contextLength,
+          version,
+          ignore_patterns: config.ignorePatterns,
+        };
+        if (a.include_activity) {
+          output.recent_activity = stats.recentActivity;
+        }
         return {
           content: [
             {
               type: 'text',
-              text: JSON.stringify(
-                {
-                  total: stats.total,
-                  indexed: stats.indexed,
-                  pending: stats.pending + indexingStatus.queued,
-                  chunks: stats.chunks,
-                  links: stats.links,
-                  last_indexed: stats.lastIndexed,
-                  ignore_patterns: config.ignorePatterns,
-                  model: config.apiKey ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
-                  context_length: contextLength,
-                  version,
-                  recent_activity: stats.recentActivity,
-                },
-                null,
-                2,
-              ),
+              text: JSON.stringify(output, null, 2),
             },
           ],
         };
