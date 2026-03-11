@@ -221,7 +221,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
   const isTTY = process.stderr.isTTY === true;
   const logEvery = Math.max(config.batchSize, Math.floor(files.length / 10));
 
-  process.stderr.write(`[obsidian-hybrid-search] Indexing vault (${files.length} notes)...\n`);
+  process.stderr.write(`Indexing vault (${files.length} notes)...\n`);
   if (isTTY) {
     // Print initial empty bar without newline — will be overwritten in-place
     process.stderr.write(renderProgressLine(0, files.length, ''));
@@ -258,9 +258,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
       process.stderr.write(`\r\x1b[2K${renderProgressLine(processed, files.length, etaStr)}`);
     } else if (processed % logEvery < config.batchSize || processed >= files.length) {
       const pct = Math.round((processed / files.length) * 100);
-      process.stderr.write(
-        `[obsidian-hybrid-search] ${processed}/${files.length} (${pct}%)${etaStr}\n`,
-      );
+      process.stderr.write(`${processed}/${files.length} (${pct}%)${etaStr}\n`);
     }
   }
 
@@ -268,7 +266,14 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
     process.stderr.write('\n'); // finalise the progress bar line
   }
   const elapsed = formatDuration((Date.now() - startTime) / 1000);
-  process.stderr.write(`[obsidian-hybrid-search] Indexing complete in ${elapsed}\n`);
+  const summaryParts = [`${result.indexed} indexed`, `${result.skipped} skipped`];
+  if (result.errors.length > 0) {
+    summaryParts.push(`${result.errors.length} error${result.errors.length > 1 ? 's' : ''}`);
+  }
+  process.stderr.write(`Done in ${elapsed} — ${summaryParts.join(', ')}\n`);
+  for (const e of result.errors) {
+    process.stderr.write(`  ${e.path}: ${e.error}\n`);
+  }
 
   await populateMissingLinks();
   updateLastIndexed();
@@ -311,7 +316,7 @@ async function processQueue(contextLength: number): Promise<void> {
   const startTime = Date.now();
 
   if (total > 0) {
-    process.stderr.write(`[obsidian-hybrid-search] Indexing vault (${total} notes)...\n`);
+    process.stderr.write(`Indexing vault (${total} notes)...\n`);
   }
 
   try {
@@ -330,9 +335,7 @@ async function processQueue(contextLength: number): Promise<void> {
         const rate = elapsedSec > 0 ? _processedCount / elapsedSec : 0;
         const remainingSec = rate > 0 && _indexQueue.length > 0 ? _indexQueue.length / rate : 0;
         const eta = remainingSec > 5 ? ` — ${formatDuration(remainingSec)} remaining` : '';
-        process.stderr.write(
-          `[obsidian-hybrid-search] ${_processedCount}/${total} (${pct}%)${eta}\n`,
-        );
+        process.stderr.write(`${_processedCount}/${total} (${pct}%)${eta}\n`);
       }
     }
 
@@ -340,7 +343,7 @@ async function processQueue(contextLength: number): Promise<void> {
 
     if (total > 0) {
       const elapsed = formatDuration((Date.now() - startTime) / 1000);
-      process.stderr.write(`[obsidian-hybrid-search] Indexing complete in ${elapsed}\n`);
+      process.stderr.write(`Indexing complete in ${elapsed}\n`);
     }
   } finally {
     _isIndexing = false;

@@ -346,9 +346,7 @@ program
         ),
       );
     } else {
-      console.error('Indexing vault...');
-      const result = await indexVaultSync(opts.force);
-      console.log(JSON.stringify(result, null, 2));
+      await indexVaultSync(opts.force);
     }
   });
 
