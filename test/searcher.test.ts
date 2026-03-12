@@ -396,3 +396,24 @@ describe('zero-vector guard', () => {
     );
   }, 15000);
 });
+
+// ─── RRF normalization with empty lists (S-30) ────────────────────────────────
+// When semantic list is empty (no API key / local model), maxPossibleScore must
+// be computed from active lists only, so the best reachable score is 1.0, not 0.67.
+
+describe('RRF normalization with empty semantic list', () => {
+  it('top hybrid result has score <= 1.0 and >= 0.9 when only BM25+fuzzy are active', async () => {
+    // Unit tests have no OPENAI_API_KEY, so semantic list is always empty.
+    // With the fix, active lists = 2 (BM25 + fuzzy), maxPossibleScore = 2/61.
+    // A note ranked #1 in both BM25 and fuzzy gets rrfScore = 2/61 → score = 1.0.
+    // Without the fix, maxPossibleScore = 3/61 → top score ≈ 0.67 (< 0.9 threshold).
+    const results = await search('note', { mode: 'hybrid', limit: 5 });
+    assert.ok(results.length > 0, 'should return at least one result');
+    const top = results[0]!;
+    assert.ok(top.score <= 1.0, `score must be ≤ 1.0, got ${top.score}`);
+    assert.ok(
+      top.score >= 0.9,
+      `top result score should be ≥ 0.9 when only 2 of 3 lists are active, got ${top.score}`,
+    );
+  });
+});

@@ -407,7 +407,8 @@ function rrfFusion(lists: RawResult[][], k = 60): RawResult[] {
     });
   }
 
-  const maxPossibleScore = lists.length / (k + 1);
+  const activeLists = lists.filter((l) => l.length > 0);
+  const maxPossibleScore = activeLists.length > 0 ? activeLists.length / (k + 1) : 1;
 
   return Array.from(scores.values())
     .sort((a, b) => b.rrfScore - a.rrfScore)
