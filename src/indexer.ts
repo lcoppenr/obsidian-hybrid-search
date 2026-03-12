@@ -159,6 +159,23 @@ export async function populateMissingLinks(): Promise<void> {
 }
 
 /**
+ * Re-resolve wikilinks for ALL indexed notes unconditionally.
+ * Called after every full vault reindex so that notes whose targets
+ * didn't exist at index time get their links backfilled.
+ */
+async function resolveAllLinks(): Promise<void> {
+  const db = getDb();
+  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as {
+    path: string;
+    content: string;
+  }[];
+  for (const note of notes) {
+    const links = resolveWikilinks(note.content, note.path);
+    upsertLinks(note.path, links);
+  }
+}
+
+/**
  * Remove notes that no longer belong in the index:
  * - notes matching updated ignore patterns
  * - notes whose files were deleted from disk
@@ -213,7 +230,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
   const result: IndexResult = { indexed: 0, skipped: 0, errors: [] };
 
   if (files.length === 0) {
-    await populateMissingLinks();
+    await resolveAllLinks();
     updateLastIndexed();
     return result;
   }
@@ -275,7 +292,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
     process.stderr.write(`  ${e.path}: ${e.error}\n`);
   }
 
-  await populateMissingLinks();
+  await resolveAllLinks();
   updateLastIndexed();
   return result;
 }
