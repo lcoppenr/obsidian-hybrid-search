@@ -420,7 +420,6 @@ program
     const contextLength = await init();
     const stats = getStats();
     const indexingStatus = getIndexingStatus();
-    const isRemote = Boolean(config.apiKey || process.env.OPENAI_BASE_URL);
     const output: Record<string, unknown> = {
       vault: config.vaultPath,
       total: stats.total,
@@ -431,8 +430,8 @@ program
       last_indexed: stats.lastIndexed,
       db_size_mb:
         stats.dbSizeBytes !== null ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10 : null,
-      model: isRemote ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
-      provider_url: isRemote ? config.apiBaseUrl : 'local',
+      model: stats.embeddingModel,
+      embedding_dim: stats.embeddingDim,
       context_length: contextLength,
       version,
       ignore_patterns: config.ignorePatterns,

@@ -434,6 +434,8 @@ export function getStats(): {
   chunks: number;
   links: number;
   lastIndexed: string | null;
+  embeddingModel: string | null;
+  embeddingDim: number | null;
   dbSizeBytes: number | null;
   recentActivity: EventLogEntry[];
 } {
@@ -450,6 +452,18 @@ export function getStats(): {
         | { value: string }
         | undefined
     )?.value ?? null;
+  const embeddingModel =
+    (
+      db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
+        | { value: string }
+        | undefined
+    )?.value ?? null;
+  const storedDim = (
+    db.prepare("SELECT value FROM settings WHERE key = 'embedding_dim'").get() as
+      | { value: string }
+      | undefined
+  )?.value;
+  const embeddingDim = storedDim !== undefined ? parseInt(storedDim, 10) : null;
   const recentActivity = db
     .prepare('SELECT action, path, timestamp FROM event_log ORDER BY id DESC LIMIT 15')
     .all() as EventLogEntry[];
@@ -468,6 +482,8 @@ export function getStats(): {
     chunks,
     links,
     lastIndexed,
+    embeddingModel,
+    embeddingDim,
     dbSizeBytes,
     recentActivity,
   };

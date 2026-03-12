@@ -302,7 +302,6 @@ async function main() {
       if (name === 'status') {
         const stats = getStats();
         const indexingStatus = getIndexingStatus();
-        const isRemote = Boolean(config.apiKey || process.env.OPENAI_BASE_URL);
         const output: Record<string, unknown> = {
           total: stats.total,
           indexed: stats.indexed,
@@ -314,8 +313,8 @@ async function main() {
             stats.dbSizeBytes !== null
               ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10
               : null,
-          model: isRemote ? config.apiModel : 'Xenova/all-MiniLM-L6-v2 (local)',
-          provider_url: isRemote ? config.apiBaseUrl : 'local',
+          model: stats.embeddingModel,
+          embedding_dim: stats.embeddingDim,
           context_length: contextLength,
           version,
           ignore_patterns: config.ignorePatterns,
