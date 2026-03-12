@@ -125,7 +125,10 @@ function parseAliases(raw: string | null | undefined): string[] {
 }
 
 function sanitizeFtsQuery(query: string): string {
-  return query.replace(/["*^]/g, ' ').trim();
+  return query
+    .replace(/["*^()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function toFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string {
