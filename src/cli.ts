@@ -8,7 +8,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { config } from './config.js';
-import { getStats, getStoredEmbeddingDim, initVecTable, openDb } from './db.js';
+import {
+  checkModelChanged,
+  getStats,
+  getStoredEmbeddingDim,
+  initVecTable,
+  openDb,
+  saveConfigMeta,
+} from './db.js';
 import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import { getIndexingStatus, indexFile, indexVaultSync } from './indexer.js';
 import { search } from './searcher.js';
@@ -149,6 +156,22 @@ async function discoverConfig(dbPathOpt?: string): Promise<void> {
 
 async function init() {
   openDb();
+
+  // Persist config metadata so the DB is self-describing (mirrors server.ts)
+  saveConfigMeta({
+    vaultPath: config.vaultPath,
+    apiBaseUrl: config.apiBaseUrl,
+    apiModel: config.apiModel,
+    ignorePatternsCsv: config.ignorePatterns.join(','),
+  });
+
+  // Check if model changed — wipes DB if so, forces full reindex (mirrors server.ts)
+  const modelName =
+    config.apiKey || process.env.OPENAI_BASE_URL
+      ? config.apiModel
+      : 'local:Xenova/all-MiniLM-L6-v2';
+  checkModelChanged(modelName);
+
   // Read stored dim from DB first — avoids an API round-trip when the vault was
   // already indexed.  This is the common case and ensures that fulltext / title
   // searches (which never need the embedding API) keep working when offline.
