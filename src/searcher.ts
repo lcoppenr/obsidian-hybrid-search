@@ -128,22 +128,27 @@ function sanitizeFtsQuery(query: string): string {
   return query.replace(/["*^]/g, ' ').trim();
 }
 
-function toFtsQuery(query: string): string {
+function toFtsQuery(query: string, operator: 'AND' | 'OR' = 'AND'): string {
   const clean = sanitizeFtsQuery(query);
   const words = clean.split(/\s+/).filter(Boolean);
   if (words.length === 0) return '""';
-  return words.map((w) => `"${w}"*`).join(' OR ');
+  return words.map((w) => `"${w}"*`).join(` ${operator} `);
 }
+
+type FtsRow = {
+  path: string;
+  title: string;
+  tags: string;
+  aliases: string | null;
+  snippet: string;
+  rank: number;
+};
 
 export function searchBm25(query: string, limit: number, snippetLength = 300): RawResult[] {
   const db = getDb();
-  const ftsQuery = toFtsQuery(query);
   const numTokens = Math.max(10, Math.ceil(snippetLength / 4));
-
-  try {
-    const rows = db
-      .prepare(
-        `
+  const stmt = db.prepare<[number, string, number], FtsRow>(
+    `
       SELECT n.path, n.title, n.tags, n.aliases,
              snippet(notes_fts_bm25, 2, '', '', '...', ?) AS snippet,
              bm25(notes_fts_bm25, 10.0, 5.0, 1.0) AS rank
@@ -153,15 +158,13 @@ export function searchBm25(query: string, limit: number, snippetLength = 300): R
       ORDER BY rank
       LIMIT ?
     `,
-      )
-      .all(numTokens, ftsQuery, limit) as Array<{
-      path: string;
-      title: string;
-      tags: string;
-      aliases: string | null;
-      snippet: string;
-      rank: number;
-    }>;
+  );
+
+  try {
+    let rows = stmt.all(numTokens, toFtsQuery(query, 'AND'), limit);
+    if (rows.length === 0) {
+      rows = stmt.all(numTokens, toFtsQuery(query, 'OR'), limit);
+    }
 
     return rows.map((row) => ({
       path: row.path,

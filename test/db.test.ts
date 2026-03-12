@@ -162,6 +162,36 @@ describe('searchBm25 score ordering', () => {
   });
 });
 
+// ─── BM25 AND/OR query logic ──────────────────────────────────────────────────
+
+describe('searchBm25 AND/OR behavior', () => {
+  it('multi-word query uses AND — notes with all terms rank above notes with only one', () => {
+    // pkm-overview.md has both "zettelkasten" and "knowledge"
+    // zettelkasten-deep.md has only "zettelkasten"
+    const results = searchBm25('zettelkasten knowledge', 10);
+    assert.ok(results.length > 0, 'should find results');
+    const paths = results.map((r) => r.path);
+    assert.ok(paths.includes('pkm-overview.md'), 'pkm-overview.md (both words) must appear');
+    const pkmIdx = paths.indexOf('pkm-overview.md');
+    const deepIdx = paths.indexOf('zettelkasten-deep.md');
+    if (deepIdx !== -1) {
+      assert.ok(pkmIdx < deepIdx, 'note with both words should rank above note with only one');
+    }
+  });
+
+  it('falls back to OR when AND yields no results', () => {
+    // No single note has both "zettelkasten" and "python"
+    const results = searchBm25('zettelkasten python', 10);
+    assert.ok(results.length >= 2, 'OR fallback should return notes matching either term');
+    const paths = results.map((r) => r.path);
+    assert.ok(paths.includes('python-notes.md'), 'python-notes.md must appear via OR fallback');
+    assert.ok(
+      paths.some((p) => p.includes('zettelkasten')),
+      'a zettelkasten note must appear via OR fallback',
+    );
+  });
+});
+
 // ─── fuzzy title score ordering ──────────────────────────────────────────────
 
 describe('searchFuzzyTitle score ordering', () => {
