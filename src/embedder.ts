@@ -161,7 +161,8 @@ export async function getContextLength(): Promise<number> {
 export async function getEmbeddingDim(): Promise<number> {
   if (cachedDim !== null) return cachedDim;
   const [embedding] = await embed(['dimension probe']);
-  cachedDim = embedding!.length;
+  if (!embedding) throw new Error('[embedder] dimension probe failed — embedding returned null');
+  cachedDim = embedding.length;
   return cachedDim;
 }
 
@@ -169,8 +170,8 @@ export async function getEmbeddingDim(): Promise<number> {
  * Pre-seed the in-memory embedding dimension cache from a value read out of the
  * DB settings table.  Call this instead of getEmbeddingDim() when the dimension
  * is already stored so we avoid an unnecessary API round-trip on startup.
- * Also ensures the zero-vector fallback in embedApiBatchWithFallback works
- * correctly when the embedding API later becomes unavailable mid-session.
+ * Also ensures the null fallback in embedApiBatchWithFallback does not trigger
+ * for an already-known dim, since the dim is cached before any embedding call.
  */
 export function primeEmbeddingDim(dim: number): void {
   if (cachedDim === null) cachedDim = dim;
@@ -271,7 +272,8 @@ async function embedApiBatchWithFallback(texts: string[]): Promise<(Float32Array
   } catch (batchErr) {
     if (texts.length === 1) {
       const status = parseHttpStatus(batchErr);
-      const isTransient = status === 429 || status === 503 || status === 502 || status >= 500;
+      const isTransient =
+        status === 0 || status === 429 || status === 503 || status === 502 || status >= 500;
       if (isTransient) {
         for (let attempt = 1; attempt <= 2; attempt++) {
           const delay = Math.pow(2, attempt) * 1000; // 2s, 4s
