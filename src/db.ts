@@ -53,16 +53,16 @@ function runMigrations(db: DB): void {
     db.exec('ALTER TABLE notes ADD COLUMN aliases TEXT');
   }
 
-  // FTS schema v2: includes aliases column in both FTS tables.
-  // Drop and recreate whenever the stored version doesn't match — the caller
-  // is expected to force-reindex the vault so the FTS index stays consistent.
+  // FTS schema v3: unicode61 tokenchars '+#' so C++/C# are full tokens.
+  // Drop and recreate whenever the stored version doesn't match — the FTS
+  // index is rebuilt from the notes table so no vault reindex is needed.
   const ftsVersion = (
     db.prepare("SELECT value FROM settings WHERE key = 'fts_schema_version'").get() as
       | { value: string }
       | undefined
   )?.value;
 
-  if (ftsVersion !== '2') {
+  if (ftsVersion !== '3') {
     db.exec(`
       DROP TABLE IF EXISTS notes_fts_bm25;
       DROP TABLE IF EXISTS notes_fts_fuzzy;
@@ -73,7 +73,7 @@ function runMigrations(db: DB): void {
       CREATE VIRTUAL TABLE notes_fts_bm25 USING fts5(
         title, aliases, content,
         content='notes', content_rowid='id',
-        tokenize = 'unicode61'
+        tokenize = "unicode61 tokenchars '+#'"
       );
 
       CREATE VIRTUAL TABLE notes_fts_fuzzy USING fts5(
@@ -110,7 +110,7 @@ function runMigrations(db: DB): void {
       INSERT INTO notes_fts_bm25(notes_fts_bm25) VALUES('rebuild');
       INSERT INTO notes_fts_fuzzy(notes_fts_fuzzy) VALUES('rebuild');
 
-      INSERT OR REPLACE INTO settings(key, value) VALUES('fts_schema_version', '2');
+      INSERT OR REPLACE INTO settings(key, value) VALUES('fts_schema_version', '3');
     `);
   }
 }
