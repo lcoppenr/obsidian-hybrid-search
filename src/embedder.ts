@@ -1,5 +1,7 @@
 import { config } from './config.js';
 
+export const LOCAL_MODEL = 'Xenova/multilingual-e5-small';
+
 let localPipeline: any = null;
 let cachedContextLength: number | null = null;
 let cachedDim: number | null = null;
@@ -98,6 +100,14 @@ const KNOWN_CONTEXT_LENGTHS: Record<string, number> = {
   'all-minilm': 512,
   'snowflake-arctic-embed': 512,
   'paraphrase-multilingual': 512,
+
+  // ── Xenova / @xenova/transformers local models ────────────────────
+  'Xenova/multilingual-e5-small': 512,
+  'Xenova/multilingual-e5-base': 512,
+  'Xenova/nomic-embed-text-v1.5': 8192,
+  'Xenova/all-MiniLM-L6-v2': 256, // real tokenizer limit, not max_position_embeddings
+  'Xenova/all-MiniLM-L12-v2': 256,
+  'Xenova/bge-small-en-v1.5': 512,
 };
 
 export async function getContextLength(): Promise<number> {
@@ -121,13 +131,21 @@ export async function getContextLength(): Promise<number> {
       // fall through to default
     }
   } else {
-    // Local model: try to read from pipeline config
+    // Local model: check known table first (avoids loading the pipeline just for this)
+    if (KNOWN_CONTEXT_LENGTHS[LOCAL_MODEL]) {
+      cachedContextLength = KNOWN_CONTEXT_LENGTHS[LOCAL_MODEL]!;
+      return cachedContextLength;
+    }
+    // Fallback: read from pipeline config
     try {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- @xenova/transformers has no TypeScript types
       const pipeline = await getLocalPipeline();
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
-      const maxLen = pipeline.model?.config?.max_position_embeddings;
-      if (typeof maxLen === 'number') {
+      /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- @xenova/transformers has no TypeScript types */
+      const tokenizerMax: number | undefined = pipeline.tokenizer?.model_max_length;
+      const modelMax: number | undefined = pipeline.model?.config?.max_position_embeddings;
+      const maxLen: number | undefined = tokenizerMax ?? modelMax;
+      /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+      if (typeof maxLen === 'number' && maxLen > 0) {
         cachedContextLength = maxLen;
         return cachedContextLength;
       }
@@ -161,10 +179,20 @@ export function primeEmbeddingDim(dim: number): void {
 async function getLocalPipeline() {
   if (!localPipeline) {
     const { pipeline } = await import('@xenova/transformers');
-    localPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+    localPipeline = await pipeline('feature-extraction', LOCAL_MODEL);
   }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-return -- @xenova/transformers has no TypeScript types
   return localPipeline;
+}
+
+function parseHttpStatus(err: unknown): number {
+  if (!(err instanceof Error)) return 0;
+  const match = /Embedding API error (\d{3})/.exec(err.message);
+  return match ? parseInt(match[1]!, 10) : 0;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Ollama queues requests internally — parallel batches don't help and can crash
@@ -180,15 +208,21 @@ function useApiMode(): boolean {
   return !!(config.apiKey || process.env.OPENAI_BASE_URL);
 }
 
-export async function embed(texts: string[]): Promise<Float32Array[]> {
+export async function embed(
+  texts: string[],
+  type: 'query' | 'document' = 'document',
+): Promise<(Float32Array | null)[]> {
   if (useApiMode()) {
-    return embedViaApi(texts);
+    return embedViaApi(texts, type);
   }
-  return embedLocal(texts);
+  return embedLocal(texts, type);
 }
 
-async function embedViaApi(texts: string[]): Promise<Float32Array[]> {
-  const results: Float32Array[] = [];
+async function embedViaApi(
+  texts: string[],
+  _type: 'query' | 'document',
+): Promise<(Float32Array | null)[]> {
+  const results: (Float32Array | null)[] = [];
 
   // Ollama: send one at a time to avoid the >2KB crash bug in v0.12.5+
   // and because Ollama queues internally anyway (batching gives no speedup)
@@ -231,54 +265,58 @@ async function embedApiBatch(texts: string[]): Promise<Float32Array[]> {
     .map((item) => new Float32Array(item.embedding));
 }
 
-async function embedApiBatchWithFallback(texts: string[]): Promise<Float32Array[]> {
-  // Try the whole batch first
+async function embedApiBatchWithFallback(texts: string[]): Promise<(Float32Array | null)[]> {
   try {
     return await embedApiBatch(texts);
   } catch (batchErr) {
     if (texts.length === 1) {
-      // Try with progressively shorter truncations
-      for (const limit of [2000, 1000, 500]) {
-        const truncated = texts[0]!.slice(0, limit);
-        if (truncated === texts[0]) continue; // already shorter, no point retrying
-        try {
-          console.warn(`[embedder] chunk failing, retrying at ${limit} chars`);
-          return await embedApiBatch([truncated]);
-        } catch {
-          // try next truncation level
+      const status = parseHttpStatus(batchErr);
+      const isTransient = status === 429 || status === 503 || status === 502 || status >= 500;
+      if (isTransient) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          const delay = Math.pow(2, attempt) * 1000; // 2s, 4s
+          console.warn(
+            `[embedder] chunk failing (HTTP ${status}), retrying in ${delay}ms (attempt ${attempt}/2)`,
+          );
+          await sleep(delay);
+          try {
+            return await embedApiBatch(texts);
+          } catch {
+            // try next attempt
+          }
         }
       }
-      // All truncations failed — use zero vector so the note still indexes for BM25
-      if (cachedDim !== null) {
-        console.warn(
-          '[embedder] chunk unembeddable, using zero vector (note still indexed for text search)',
-        );
-        return [new Float32Array(cachedDim)];
-      }
-      throw batchErr;
+      console.warn(
+        '[embedder] chunk unembeddable, skipping embedding (note still indexed for text search)',
+      );
+      return [null];
     }
     // Batch failed — retry each item individually
     console.warn('[embedder] batch failed, retrying one by one:', (batchErr as Error).message);
-    const results: Float32Array[] = [];
+    const results: (Float32Array | null)[] = [];
     for (const text of texts) {
       const [emb] = await embedApiBatchWithFallback([text]);
-      results.push(emb!);
+      results.push(emb ?? null);
     }
     return results;
   }
 }
 
-async function embedLocal(texts: string[]): Promise<Float32Array[]> {
+async function embedLocal(
+  texts: string[],
+  type: 'query' | 'document',
+): Promise<(Float32Array | null)[]> {
   // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- @xenova/transformers has no TypeScript types
   const pipeline = await getLocalPipeline();
-  const results: Float32Array[] = [];
+  const results: (Float32Array | null)[] = [];
+  const prefix = type === 'query' ? 'query: ' : 'passage: ';
 
   for (let i = 0; i < texts.length; i += config.batchSize) {
     const batch = texts.slice(i, i + config.batchSize);
     const batchResults = await Promise.all(
       batch.map(async (text) => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call -- @xenova/transformers has no TypeScript types for pipeline output
-        const output = await pipeline(text, { pooling: 'mean', normalize: true });
+        const output = await pipeline(prefix + text, { pooling: 'mean', normalize: true });
         // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
         return new Float32Array(output.data);
       }),

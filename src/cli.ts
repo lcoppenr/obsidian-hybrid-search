@@ -16,7 +16,7 @@ import {
   openDb,
   saveConfigMeta,
 } from './db.js';
-import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
+import { LOCAL_MODEL, getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import { getIndexingStatus, indexFile, indexVaultSync } from './indexer.js';
 import { search } from './searcher.js';
 
@@ -167,9 +167,7 @@ async function init() {
 
   // Check if model changed — wipes DB if so, forces full reindex (mirrors server.ts)
   const modelName =
-    config.apiKey || process.env.OPENAI_BASE_URL
-      ? config.apiModel
-      : 'local:Xenova/all-MiniLM-L6-v2';
+    config.apiKey || process.env.OPENAI_BASE_URL ? config.apiModel : `local:${LOCAL_MODEL}`;
   checkModelChanged(modelName);
 
   // Read stored dim from DB first — avoids an API round-trip when the vault was

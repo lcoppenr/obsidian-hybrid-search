@@ -103,7 +103,7 @@ export async function indexFile(
     // Prepend title to first chunk — improves semantic recall for the note as a whole
     // (idea from obsidian-similar-notes plugin)
     const textsToEmbed = chunks.map((c, i) => (i === 0 && title ? `${title}\n${c.text}` : c.text));
-    const embeddings = await embed(textsToEmbed);
+    const embeddings = await embed(textsToEmbed, 'document');
 
     upsertNote({
       path: relPath,
@@ -113,7 +113,10 @@ export async function indexFile(
       content,
       mtime: stat.mtimeMs,
       hash,
-      chunks: chunks.map((c, i) => ({ text: c.text, embedding: embeddings[i]! })),
+      chunks: chunks.map((c, i) => ({
+        text: c.text,
+        embedding: embeddings[i] ?? (null as unknown as Float32Array),
+      })),
     });
 
     const resolvedLinks = resolveWikilinks(content, relPath);

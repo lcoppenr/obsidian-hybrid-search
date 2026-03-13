@@ -14,7 +14,7 @@ import {
   openDb,
   saveConfigMeta,
 } from './db.js';
-import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
+import { LOCAL_MODEL, getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import {
   getIndexingStatus,
   indexFile,
@@ -86,9 +86,7 @@ async function main() {
 
   // Check if model changed — wipes DB if so, forces full reindex
   const modelName =
-    config.apiKey || process.env.OPENAI_BASE_URL
-      ? config.apiModel
-      : 'local:Xenova/all-MiniLM-L6-v2';
+    config.apiKey || process.env.OPENAI_BASE_URL ? config.apiModel : `local:${LOCAL_MODEL}`;
   const modelChanged = checkModelChanged(modelName);
   if (modelChanged) {
     console.error('[server] embedding model changed — database cleared, full reindex will run');

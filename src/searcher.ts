@@ -337,8 +337,9 @@ async function embedQuery(text: string, maxAttempts = 3): Promise<Float32Array |
   const RETRY_BASE_MS = 500;
   for (let i = 0; i < maxAttempts; i++) {
     try {
-      const [emb] = await embed([text]);
-      const f32 = new Float32Array(emb!);
+      const [emb] = await embed([text], 'query');
+      if (emb == null) continue;
+      const f32 = new Float32Array(emb);
       if (!isZeroVector(f32)) return f32;
       // Zero vector = embedder's silent fallback — treat as a retriable failure
     } catch {
