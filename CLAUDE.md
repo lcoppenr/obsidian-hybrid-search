@@ -41,6 +41,16 @@ npm run build && npm test && npm run lint && npm run knip
 - If you add a new MCP parameter: update `SearchOptions` in `searcher.ts`, `server.ts`, and CLI flags in `cli.ts`
 - `npm test` catches result shape changes (`test/contract.test.ts`)
 
+**MCP description principles** — when editing any `description` field in `server.ts`, each parameter (especially mode-type enums) must answer four questions:
+
+1. What does it do / return?
+2. When should the agent choose this over alternatives?
+3. What does it NOT do (that the agent might expect)?
+4. What are the input constraints?
+
+For overlapping modes, include explicit routing: "Use X when Y. Do NOT use X when Z — use W instead."
+Omitting "when not to use" for overlapping modes causes agents to misinterpret correct behavior as bugs (precedent: S-66 — agent expected alias-match to be rank #1 in hybrid mode, but hybrid ranks by content depth, not note identity).
+
 **After adding new `SearchOptions` fields:**
 Update all three places: `SearchOptions` interface in `searcher.ts`, MCP tool schema in `server.ts`, and CLI flags in `cli.ts`.
 
