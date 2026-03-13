@@ -780,11 +780,17 @@ async function searchByQuery(
   // hybrid: RRF fusion of all three
   // embedQuery() retries on transient failures; on permanent failure it returns null
   // and vectorResults becomes [], so RRF degrades to BM25 + fuzzy (still useful).
+  //
+  // Use a minimum candidate pool for sub-queries so RRF has enough signal to rank
+  // correctly even when limit=1. Without this, each sub-query returns only its own
+  // #1 result and the BM25 winner (weight=2.0) always beats the true hybrid winner.
+  // The caller (search()) already slices to `limit` after filtering.
+  const candidateLimit = Math.max(limit, 20);
   const f32 = await embedQuery(query);
   const [bm25Results, fuzzyResults, vectorResults] = await Promise.all([
-    Promise.resolve(searchBm25(query, limit, snippetLength)),
-    Promise.resolve(searchFuzzyTitle(query, limit)),
-    f32 ? searchVector(f32, limit) : Promise.resolve([]),
+    Promise.resolve(searchBm25(query, candidateLimit, snippetLength)),
+    Promise.resolve(searchFuzzyTitle(query, candidateLimit)),
+    f32 ? searchVector(f32, candidateLimit) : Promise.resolve([]),
   ]);
 
   // Weights reflect signal reliability: BM25 (exact keyword) > semantic > fuzzy_title (partial)
