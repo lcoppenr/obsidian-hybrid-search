@@ -91,11 +91,7 @@ export async function indexFile(
         : [];
     const inlineTags = parseInlineTags(content);
     const tags = [...new Set([...frontmatterTags, ...inlineTags])];
-    const aliases: string[] = Array.isArray(frontmatter.aliases)
-      ? frontmatter.aliases.map(String).filter(Boolean)
-      : typeof frontmatter.aliases === 'string' && frontmatter.aliases.trim()
-        ? [frontmatter.aliases.trim()]
-        : [];
+    const aliases = parseAliasField(frontmatter.aliases as unknown);
 
     const ctxLen = contextLength ?? (await getContextLength());
     const chunks = chunkNote(content, ctxLen).filter((c) => c.text.trim().length > 0);
@@ -436,6 +432,27 @@ export function startWatcher(contextLength: number): void {
  * Matches # preceded by start-of-string or whitespace, followed by
  * a letter/underscore and then any word chars, hyphens, or slashes.
  */
+/**
+ * Parse the `aliases` field from gray-matter frontmatter.
+ * Handles three formats emitted by Obsidian:
+ *   1. YAML list  → gray-matter produces a JS array
+ *   2. JSON-stringified array → gray-matter produces a string like '["a","b"]'
+ *   3. Plain string → single alias
+ */
+export function parseAliasField(raw: unknown): string[] {
+  const nonempty = (s: string) => s.trim().length > 0;
+  if (Array.isArray(raw)) return raw.map(String).filter(nonempty);
+  if (typeof raw !== 'string' || !raw.trim()) return [];
+  const trimmed = raw.trim();
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) return parsed.map(String).filter(nonempty);
+  } catch {
+    // not valid JSON — treat as a single alias
+  }
+  return [trimmed];
+}
+
 export function parseInlineTags(content: string): string[] {
   const seen = new Set<string>();
   // Strip code blocks to avoid matching # inside them

@@ -77,6 +77,30 @@ beforeAll(() => {
     });
   }
 
+  // Note with short Cyrillic alias (< 3 chars) — tests alias exact-match path
+  upsertNote({
+    path: 'zk-system.md',
+    title: 'Zettelkasten System',
+    tags: [],
+    aliases: ['ЗК', 'ZK System'],
+    content: 'A note-taking methodology by Niklas Luhmann.',
+    mtime: Date.now(),
+    hash: 'hash-zk-system',
+    chunks: [{ text: 'A note-taking methodology by Niklas Luhmann.', embedding: fakeEmbedding }],
+  });
+
+  // Note with longer alias for exact-match dedup check
+  upsertNote({
+    path: 'pkm-intro.md',
+    title: 'PKM Introduction',
+    tags: [],
+    aliases: ['Personal Knowledge Management'],
+    content: 'Overview of PKM practices.',
+    mtime: Date.now(),
+    hash: 'hash-pkm-intro',
+    chunks: [{ text: 'Overview of PKM practices.', embedding: fakeEmbedding }],
+  });
+
   // BFS graph: note-a → note-b → note-c → note-a (cycle)
   upsertLinks('note-a.md', ['note-b.md']);
   upsertLinks('note-b.md', ['note-c.md']);
@@ -395,6 +419,48 @@ describe('zero-vector guard', () => {
       'all results should NOT have the same 0.5 semantic score (zero-vector symptom)',
     );
   }, 15000);
+});
+
+// ─── Alias exact-match search (S-59) ─────────────────────────────────────────
+// Short Cyrillic aliases (< 3 chars) can't be tokenised by the trigram FTS index.
+// searchByAliasExact handles them via JS-level Unicode case-folding.
+
+describe('alias exact-match search', () => {
+  it('title mode finds a note by its short Cyrillic alias (< 3 chars)', async () => {
+    const results = await search('ЗК', { mode: 'title', limit: 10 });
+    const match = results.find((r) => r.path === 'zk-system.md');
+    assert.ok(
+      match,
+      `should find zk-system.md by alias "ЗК", got: ${JSON.stringify(results.map((r) => r.path))}`,
+    );
+  });
+
+  it('title mode finds a note by its short Cyrillic alias case-insensitively', async () => {
+    const results = await search('зк', { mode: 'title', limit: 10 });
+    const match = results.find((r) => r.path === 'zk-system.md');
+    assert.ok(match, 'should find zk-system.md by lowercase alias "зк"');
+  });
+
+  it('alias exact match ranks the target note at the top', async () => {
+    const results = await search('ЗК', { mode: 'title', limit: 10 });
+    assert.ok(results.length > 0, 'should return at least one result');
+    assert.equal(results[0]!.path, 'zk-system.md', 'alias exact-match should be rank 1');
+  });
+
+  it('title mode finds a note by a longer alias', async () => {
+    const results = await search('Personal Knowledge Management', { mode: 'title', limit: 10 });
+    const match = results.find((r) => r.path === 'pkm-intro.md');
+    assert.ok(match, 'should find pkm-intro.md by its full alias');
+  });
+
+  it('hybrid mode includes alias exact-match via fuzzy_title list', async () => {
+    const results = await search('ЗК', { mode: 'hybrid', limit: 10 });
+    const match = results.find((r) => r.path === 'zk-system.md');
+    assert.ok(
+      match,
+      `hybrid mode should surface zk-system.md for alias "ЗК", got: ${JSON.stringify(results.map((r) => r.path))}`,
+    );
+  });
 });
 
 // ─── RRF normalization with empty lists (S-30) ────────────────────────────────

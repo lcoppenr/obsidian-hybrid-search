@@ -10,7 +10,7 @@ const vaultDir = mkdtempSync(path.join(tmpdir(), 'ohs-indexer-test-'));
 process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 
 // Dynamic imports so config reads the env var we just set
-const { parseInlineTags, parseWikilinks, resolveWikilinks, getIndexingStatus } =
+const { parseAliasField, parseInlineTags, parseWikilinks, resolveWikilinks, getIndexingStatus } =
   await import('../src/indexer.js');
 const { openDb, initVecTable, upsertNote } = await import('../src/db.js');
 
@@ -323,5 +323,49 @@ describe('resolveWikilinks', () => {
     assert.ok(result.includes('notes/beta.md'));
     assert.ok(result.includes('delta.md'));
     assert.equal(result.length, 3);
+  });
+});
+
+// ─── parseAliasField ──────────────────────────────────────────────────────────
+
+describe('parseAliasField', () => {
+  it('returns elements from a proper YAML array', () => {
+    assert.deepEqual(parseAliasField(['alias one', 'alias two']), ['alias one', 'alias two']);
+  });
+
+  it('filters empty strings from an array', () => {
+    assert.deepEqual(parseAliasField(['valid', '', '  ']), ['valid']);
+  });
+
+  it('parses a JSON-stringified array string (Obsidian legacy format)', () => {
+    const raw = '["системы Лумана", "ЗК", "Zettelkasten"]';
+    assert.deepEqual(parseAliasField(raw), ['системы Лумана', 'ЗК', 'Zettelkasten']);
+  });
+
+  it('parses a JSON-stringified array with escaped quotes', () => {
+    const raw = String.raw`["alias a", "alias b"]`;
+    assert.deepEqual(parseAliasField(raw), ['alias a', 'alias b']);
+  });
+
+  it('wraps a plain non-JSON string as a single alias', () => {
+    assert.deepEqual(parseAliasField('My Alias'), ['My Alias']);
+  });
+
+  it('returns empty array for null', () => {
+    assert.deepEqual(parseAliasField(null), []);
+  });
+
+  it('returns empty array for undefined', () => {
+    assert.deepEqual(parseAliasField(undefined), []);
+  });
+
+  it('returns empty array for empty string', () => {
+    assert.deepEqual(parseAliasField(''), []);
+    assert.deepEqual(parseAliasField('   '), []);
+  });
+
+  it('returns empty array for non-string non-array values', () => {
+    assert.deepEqual(parseAliasField(42), []);
+    assert.deepEqual(parseAliasField({}), []);
   });
 });

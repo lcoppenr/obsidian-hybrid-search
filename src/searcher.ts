@@ -219,12 +219,50 @@ function calculateTrigramOverlap(query: string, title: string): number {
   return matchCount / queryTrigrams.size;
 }
 
+/**
+ * Exact alias match using JS-level Unicode case-folding (NFD + toLowerCase).
+ * Handles short aliases (< 3 chars) that the trigram FTS index can't tokenize,
+ * and Cyrillic / non-ASCII aliases that SQLite's lower() doesn't fold correctly.
+ */
+function searchByAliasExact(query: string, limit: number): RawResult[] {
+  const db = getDb();
+  const queryNfd = query.normalize('NFD').toLowerCase();
+
+  const rows = db
+    .prepare(
+      "SELECT path, title, tags, aliases FROM notes WHERE aliases IS NOT NULL AND aliases != '[]'",
+    )
+    .all() as Array<{ path: string; title: string; tags: string; aliases: string }>;
+
+  const matches: RawResult[] = [];
+  for (const row of rows) {
+    if (matches.length >= limit) break;
+    if (parseAliases(row.aliases).some((a) => a.normalize('NFD').toLowerCase() === queryNfd)) {
+      matches.push({
+        path: row.path,
+        title: row.title ?? '',
+        tags: row.tags ?? '[]',
+        aliases: row.aliases,
+        snippet: '',
+        score: 1.0,
+        scores: { fuzzy_title: 1.0 },
+      });
+    }
+  }
+  return matches;
+}
+
 export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
+  // Exact alias match first — handles short aliases (< 3 chars) and Cyrillic that
+  // the trigram FTS can't tokenize, ensuring they always surface in title/hybrid mode.
+  const aliasExact = searchByAliasExact(query, limit);
+  const aliasExactPaths = new Set(aliasExact.map((r) => r.path));
+
   const db = getDb();
   const ftsQuery = buildTrigramOrQuery(query);
 
   try {
-    const rows = db
+    const ftsRows = db
       .prepare(
         `
       SELECT n.path, n.title, n.tags, n.aliases,
@@ -244,7 +282,7 @@ export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
       rank: number;
     }>;
 
-    return rows
+    const trigramResults = ftsRows
       .map((row) => {
         const titleOverlap = calculateTrigramOverlap(query, row.title ?? '');
         // Only consider aliases with ≥3 chars — shorter strings produce no trigrams
@@ -268,9 +306,12 @@ export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
           },
         };
       })
-      .filter((r) => r.score > 0);
+      .filter((r) => r.score > 0 && !aliasExactPaths.has(r.path));
+
+    // Alias exact matches at the front, trigram results appended (deduped)
+    return [...aliasExact, ...trigramResults].slice(0, limit);
   } catch {
-    return [];
+    return [...aliasExact];
   }
 }
 
