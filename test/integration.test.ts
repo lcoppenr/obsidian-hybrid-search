@@ -58,6 +58,16 @@ describe('search', () => {
     });
     assert.ok(results.length > 0);
   });
+
+  it('Russian notes are indexed (fulltext)', async () => {
+    const results = await search('управление знаниями', { mode: 'fulltext' });
+    assert.ok(results.some((r) => r.path.includes('управление')));
+  });
+
+  it('longer notes are chunked and searchable', async () => {
+    const results = await search('shutdown ritual', { mode: 'fulltext' });
+    assert.ok(results.some((r) => r.path.includes('deep-work')));
+  });
 });
 
 describe('snippet fallback', () => {
