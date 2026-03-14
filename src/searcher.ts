@@ -18,6 +18,7 @@ interface SearchResult {
     semantic: number | null;
     bm25: number | null;
     fuzzy_title: number | null;
+    hybrid: number | null;
   };
 }
 
@@ -113,6 +114,7 @@ function toSearchResult(r: RawResult): SearchResult {
       semantic: r.scores.semantic ?? null,
       bm25: r.scores.bm25 ?? null,
       fuzzy_title: r.scores.fuzzy_title ?? null,
+      hybrid: r.scores.hybrid ?? null,
     },
   };
 }
@@ -520,7 +522,7 @@ function searchRelated(
       matchedBy: depth === 0 ? ['source'] : depth > 0 ? ['link'] : ['backlink'],
       links: [],
       backlinks: [],
-      scores: { semantic: null, bm25: null, fuzzy_title: null },
+      scores: { semantic: null, bm25: null, fuzzy_title: null, hybrid: null },
     };
   };
 

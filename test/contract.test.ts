@@ -142,6 +142,25 @@ describe('SearchResult shape', () => {
     );
   });
 
+  it('scores.hybrid is null for non-hybrid modes (fulltext, title)', async () => {
+    const results = await search('note', { mode: 'fulltext', limit: 5 });
+    assert.ok(results.length > 0);
+    for (const r of results) {
+      assert.ok('hybrid' in r.scores, 'scores.hybrid field must exist');
+      assert.strictEqual(r.scores.hybrid, null, 'scores.hybrid must be null for fulltext mode');
+    }
+  });
+
+  it('scores.hybrid is a number or null for any search result', async () => {
+    const results = await search('alpha', { mode: 'fulltext', limit: 5 });
+    for (const r of results) {
+      assert.ok(
+        r.scores.hybrid === null || typeof r.scores.hybrid === 'number',
+        'scores.hybrid must be number or null',
+      );
+    }
+  });
+
   it('matchedBy contains only valid signal names', async () => {
     const results = await search('alpha', { mode: 'fulltext', limit: 5 });
     assert.ok(results.length > 0);
