@@ -20,7 +20,7 @@ const repoRoot = path.resolve(__dirname, '..');
 function parseArgs(): {
   vault: string;
   goldenSet: string;
-  output: string;
+  outputArg: string | undefined;
   k: number;
 } {
   const args = process.argv.slice(2);
@@ -38,13 +38,20 @@ function parseArgs(): {
     ? goldenSetArg
     : path.join(repoRoot, goldenSetArg);
 
+  return { vault: vaultPath, goldenSet: goldenSetPath, outputArg: get('--output'), k };
+}
+
+function buildOutputPath(outputArg: string | undefined, vault: string, model: string): string {
+  if (outputArg) {
+    return path.isAbsolute(outputArg) ? outputArg : path.join(repoRoot, outputArg);
+  }
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-');
-  const defaultOutput = path.join(repoRoot, `eval/results/${dateStr}.json`);
-  const outputArg = get('--output') ?? defaultOutput;
-  const outputPath = path.isAbsolute(outputArg) ? outputArg : path.join(repoRoot, outputArg);
-
-  return { vault: vaultPath, goldenSet: goldenSetPath, output: outputPath, k };
+  // e.g. "obsidian-help-en" from "fixtures/obsidian-help/en"
+  const vaultSlug = path.relative(repoRoot, vault).replace(/[\\/]/g, '-');
+  // shorten model name: strip vendor prefix (Xenova/, openai/) and replace / with -
+  const modelSlug = model.replace(/^[^/]+\//, '').replace(/\//g, '-');
+  return path.join(repoRoot, `eval/results/${dateStr}_${vaultSlug}_${modelSlug}.json`);
 }
 
 // ─── Golden-set types ─────────────────────────────────────────────────────────
@@ -61,14 +68,13 @@ interface GoldenQuery {
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  const { vault, goldenSet, output, k } = parseArgs();
+  const { vault, goldenSet, outputArg, k } = parseArgs();
 
   // 1. Set vault path BEFORE importing src modules
   process.env.OBSIDIAN_VAULT_PATH = vault;
 
   console.log(`[eval] vault:      ${vault}`);
   console.log(`[eval] golden set: ${goldenSet}`);
-  console.log(`[eval] output:     ${output}`);
   console.log(`[eval] k:          ${k}`);
   console.log();
 
@@ -107,6 +113,8 @@ async function main(): Promise<void> {
   const model =
     process.env.EMBEDDING_MODEL ??
     (process.env.OPENAI_API_KEY ? 'text-embedding-3-small' : 'local');
+  const output = buildOutputPath(outputArg, vault, model);
+  console.log(`[eval] output:     ${output}`);
 
   // 6. Run queries
   interface PerQueryResult {
