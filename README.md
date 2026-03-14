@@ -4,7 +4,7 @@ An [MCP server](https://modelcontextprotocol.io) and CLI tool that makes your Ob
 
 Once connected, any MCP-compatible AI assistant can answer questions grounded in your actual notes: finding knowledge by meaning, exact phrase, or title; traversing the wikilink graph; filtering by tag or folder; always citing the source note. No guessing from training data, no manual copy-paste.
 
-No external services required. A bundled `@xenova/transformers` model handles embeddings locally by default. Any OpenAI-compatible API (OpenRouter, Ollama, LM Studio) works as a drop-in replacement.
+No external services required. A bundled `@huggingface/transformers` model handles embeddings locally by default. Any OpenAI-compatible API (OpenRouter, Ollama, LM Studio) works as a drop-in replacement.
 
 ## Features
 
@@ -30,8 +30,10 @@ No external services required. A bundled `@xenova/transformers` model handles em
   - `--extended` adds a TAGS/ALIASES column to the CLI table showing frontmatter tags (`#tag`) and aliases
 - **Incremental indexing**
   - only re-indexes changed files; watches for edits in real time
+- **Cross-encoder reranking**
+  - `--rerank` re-scores results with `bge-reranker-v2-m3` (ONNX int8, ~570 MB download once); improves precision for conceptual and multilingual queries
 - **Local embeddings**
-  - works offline via `@xenova/transformers` (no API key required); default model: Xenova/multilingual-e5-small, 100+ languages
+  - works offline via `@huggingface/transformers` (no API key required); default model: Xenova/multilingual-e5-small, 100+ languages
 - **Remote embeddings**
   - OpenAI-compatible API (OpenRouter, Ollama, etc.)
 - **Ignore patterns**
@@ -130,6 +132,10 @@ obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --direction ba
 
 # Longer context around each link
 obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --snippet-length 500
+
+# Rerank results with a cross-encoder model (improves precision, ~1-3s extra latency)
+# Downloads bge-reranker-v2-m3 ONNX (~570 MB) on first use, cached in ~/.cache/huggingface/
+obsidian-hybrid-search "zettelkasten atomic notes" --rerank
 
 # Show tags and aliases alongside results
 obsidian-hybrid-search "zettelkasten" --extended
@@ -258,21 +264,22 @@ Uses the built-in `Xenova/multilingual-e5-small` model — works fully offline, 
 
 The server exposes three tools:
 
-| Tool      | Description                                                                                                                                                                                                                                                              |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `search`  | Search the vault. Use `query` for text search (`mode`: hybrid/semantic/fulltext/title) or `path` for semantic similarity. Combine `path` with `related: true` for graph traversal. Supports `scope`, `tag`, `limit`, `threshold`, `depth`, `direction`, `snippet_length` |
-| `reindex` | Reindex the vault or a specific file                                                                                                                                                                                                                                     |
-| `status`  | Show total notes, indexed count, last indexed time                                                                                                                                                                                                                       |
+| Tool      | Description                                                                                                                                                                                                                                                                        |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search`  | Search the vault. Use `query` for text search (`mode`: hybrid/semantic/fulltext/title) or `path` for semantic similarity. Combine `path` with `related: true` for graph traversal. Supports `scope`, `tag`, `limit`, `threshold`, `depth`, `direction`, `snippet_length`, `rerank` |
+| `reindex` | Reindex the vault or a specific file                                                                                                                                                                                                                                               |
+| `status`  | Show total notes, indexed count, last indexed time                                                                                                                                                                                                                                 |
 
 ## Configuration
 
-| Environment variable       | Default                              | Description                                                                         |
-| -------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------- |
-| `OBSIDIAN_VAULT_PATH`      | _(required)_                         | Absolute path to your vault                                                         |
-| `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                     |
-| `OPENAI_API_KEY`           | —                                    | API key; omit to use local Xenova embeddings or keyless servers (Ollama, LM Studio) |
-| `OPENAI_BASE_URL`          | `https://api.openai.com/v1`          | API base URL                                                                        |
-| `OPENAI_EMBEDDING_MODEL`   | `text-embedding-3-small`             | Embedding model name                                                                |
+| Environment variable       | Default                                  | Description                                                                            |
+| -------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
+| `OBSIDIAN_VAULT_PATH`      | _(required)_                             | Absolute path to your vault                                                            |
+| `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas`     | Comma-separated ignore patterns                                                        |
+| `OPENAI_API_KEY`           | —                                        | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio)     |
+| `OPENAI_BASE_URL`          | `https://api.openai.com/v1`              | API base URL                                                                           |
+| `OPENAI_EMBEDDING_MODEL`   | `text-embedding-3-small`                 | Embedding model name                                                                   |
+| `RERANKER_MODEL`           | `onnx-community/bge-reranker-v2-m3-ONNX` | Cross-encoder reranker model (used with `--rerank`); cached in `~/.cache/huggingface/` |
 
 ### Ignore patterns
 
