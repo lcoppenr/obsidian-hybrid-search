@@ -164,10 +164,12 @@ export function searchBm25(query: string, limit: number, snippetLength = 300): R
   );
 
   try {
-    let rows = stmt.all(numTokens, toFtsQuery(query, 'AND'), limit);
-    if (rows.length === 0) {
-      rows = stmt.all(numTokens, toFtsQuery(query, 'OR'), limit);
-    }
+    // Use OR so that documents are ranked by how many query terms they match (BM25
+    // naturally scores full-match documents higher).  AND was filtering out
+    // relevant documents whenever a single query word (e.g. "between", "organize")
+    // was absent from the document—even if that document was the best conceptual
+    // match for every other term in the query.
+    const rows = stmt.all(numTokens, toFtsQuery(query, 'OR'), limit);
 
     return rows.map((row) => ({
       path: row.path,
