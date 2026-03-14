@@ -209,6 +209,11 @@ async function main() {
                 'Max snippet length in characters (default: 300). ' +
                 'Increase to 600-1000 for aggregator/index notes where more surrounding context is needed.',
             },
+            rerank: {
+              type: 'boolean',
+              description:
+                'Enable cross-encoder re-ranking for higher precision. Downloads ~560MB model on first use (cached at ~/.cache/). Recommended when result order matters. Only applies to hybrid mode (default). Default: false.',
+            },
           },
         },
       },
@@ -264,6 +269,7 @@ async function main() {
           depth: a.depth as number | undefined,
           direction: a.direction as 'outgoing' | 'backlinks' | 'both' | undefined,
           snippetLength: a.snippet_length as number | undefined,
+          rerank: a.rerank as boolean | undefined,
           notePath,
         });
         return {
