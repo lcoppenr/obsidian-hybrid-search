@@ -816,9 +816,16 @@ async function searchByQuery(
           (c): RerankCandidate => ({ title: c.title, chunkText: c.chunkText, snippet: c.snippet }),
         ),
       );
-      results = candidates
-        .map((c, i) => ({ ...c, score: rerankScores[i] ?? 0 }))
-        .sort((a, b) => b.score - a.score);
+      // Sort by reranker logit. Reranker logits are unbounded and can be negative
+      // for moderately-relevant documents, so we convert to rank-based scores
+      // (always positive) to avoid the downstream threshold filter (default 0.0)
+      // silently discarding valid candidates.
+      const withLogits = candidates.map((c, i) => ({ c, logit: rerankScores[i] ?? 0 }));
+      withLogits.sort((a, b) => b.logit - a.logit);
+      results = withLogits.map(({ c }, rank) => ({
+        ...c,
+        score: 1 / (rank + 1), // rank-based: always positive, order preserved
+      }));
     } catch (err) {
       process.stderr.write(
         `Reranking failed: ${err instanceof Error ? err.message : String(err)}. Returning original order.\n`,

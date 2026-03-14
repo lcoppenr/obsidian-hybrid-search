@@ -71,10 +71,12 @@ export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
 
 # Optional — only needed if using a remote embedding API instead of local model
 export OPENAI_API_KEY="sk-..."
+
 # Default API base is https://api.openai.com/v1 — override for other providers:
 # export OPENAI_BASE_URL="https://openrouter.ai/api/v1"  # OpenRouter
-# export OPENAI_BASE_URL="http://localhost:11434/v1"      # Ollama (no key needed)
-# export OPENAI_BASE_URL="http://localhost:1234/v1"       # LM Studio (no key needed)
+# export OPENAI_BASE_URL="http://localhost:11434/v1"     # Ollama (no key needed)
+# export OPENAI_BASE_URL="http://localhost:1234/v1"      # LM Studio (no key needed)
+
 export OPENAI_EMBEDDING_MODEL="text-embedding-3-small"
 ```
 

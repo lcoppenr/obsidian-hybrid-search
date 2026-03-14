@@ -325,7 +325,7 @@ program
   .option('--extended', 'Show tags and aliases column in output table')
   .option(
     '--rerank',
-    'Enable cross-encoder re-ranking (downloads ~560MB model on first use, hybrid mode only)',
+    'Enable cross-encoder re-ranking (downloads ~32MB model on first use, hybrid mode only)',
   )
   .action(async (query: string | undefined, opts: SearchOpts) => {
     const effectiveInput = opts.path ?? query;

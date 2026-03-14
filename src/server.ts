@@ -212,7 +212,7 @@ async function main() {
             rerank: {
               type: 'boolean',
               description:
-                'Enable cross-encoder re-ranking for higher precision. Downloads ~560MB model on first use (cached). Recommended when result order matters. Only applies to hybrid mode (default). Default: false.',
+                'Enable cross-encoder re-ranking for higher precision. Downloads ~32MB model on first use (cached). Recommended when result order matters. Only applies to hybrid mode (default). Default: false.',
             },
           },
         },
