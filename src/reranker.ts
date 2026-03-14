@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from './config.js';
@@ -73,7 +74,11 @@ export class CrossEncoderReranker {
     if (!this.loadPromise) {
       // Assign loadPromise BEFORE awaiting — prevents race where two concurrent
       // callers both see loadPromise === null and load the model twice.
-      process.stderr.write(`Loading reranker model ${this.modelName}, please wait...\n`);
+      const cacheDir = path.join(os.homedir(), '.cache', 'huggingface', this.modelName);
+      const isCached = fs.existsSync(cacheDir);
+      if (!isCached) {
+        process.stderr.write(`Loading reranker model ${this.modelName}, please wait...\n`);
+      }
       this.loadPromise = this._loadModel().then((p) => {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment -- _loadModel returns any (xenova has no types)
         this.pipeline = p;
