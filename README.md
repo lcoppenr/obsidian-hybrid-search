@@ -272,14 +272,13 @@ The server exposes three tools:
 
 ## Configuration
 
-| Environment variable       | Default                                  | Description                                                                            |
-| -------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------- |
-| `OBSIDIAN_VAULT_PATH`      | _(required)_                             | Absolute path to your vault                                                            |
-| `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas`     | Comma-separated ignore patterns                                                        |
-| `OPENAI_API_KEY`           | —                                        | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio)     |
-| `OPENAI_BASE_URL`          | `https://api.openai.com/v1`              | API base URL                                                                           |
-| `OPENAI_EMBEDDING_MODEL`   | `text-embedding-3-small`                 | Embedding model name                                                                   |
-| `RERANKER_MODEL`           | `onnx-community/bge-reranker-v2-m3-ONNX` | Cross-encoder reranker model (used with `--rerank`); cached in `~/.cache/huggingface/` |
+| Environment variable       | Default                              | Description                                                                        |
+| -------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| `OBSIDIAN_VAULT_PATH`      | _(required)_                         | Absolute path to your vault                                                        |
+| `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                    |
+| `OPENAI_API_KEY`           | —                                    | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio) |
+| `OPENAI_BASE_URL`          | `https://api.openai.com/v1`          | API base URL                                                                       |
+| `OPENAI_EMBEDDING_MODEL`   | `text-embedding-3-small`             | Embedding model name                                                               |
 
 ### Ignore patterns
 
