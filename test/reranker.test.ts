@@ -12,6 +12,7 @@ const { CrossEncoderReranker } = await import('../src/reranker.js');
 function makeMockPipeline(
   scoreFn: (inputIndex: number) => number,
 ): (inputs: unknown[], opts?: unknown) => Promise<Array<Array<{ label: string; score: number }>>> {
+  // eslint-disable-next-line @typescript-eslint/require-await
   return async (inputs) =>
     inputs.map((_, i) => [
       { label: 'LABEL_0', score: 1 - scoreFn(i) },
@@ -46,15 +47,15 @@ describe('CrossEncoderReranker.scoreAll', () => {
   it('uses chunkText when available, falls back to snippet', async () => {
     const seenTexts: string[] = [];
     const r = new CrossEncoderReranker('mock-model');
-    (r as unknown as Record<string, unknown>)['pipeline'] = async (
-      inputs: Array<{ text: string; text_pair: string }>,
-    ) => {
-      seenTexts.push(...inputs.map((x) => x.text_pair));
-      return inputs.map(() => [
-        { label: 'LABEL_0', score: 0.1 },
-        { label: 'LABEL_1', score: 0.9 },
-      ]);
-    };
+    (r as unknown as Record<string, unknown>)['pipeline'] =
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async (inputs: Array<{ text: string; text_pair: string }>) => {
+        seenTexts.push(...inputs.map((x) => x.text_pair));
+        return inputs.map(() => [
+          { label: 'LABEL_0', score: 0.1 },
+          { label: 'LABEL_1', score: 0.9 },
+        ]);
+      };
     await r.scoreAll('q', [
       { title: 'T1', chunkText: 'chunk text', snippet: 'snippet text' },
       { title: 'T2', chunkText: undefined, snippet: 'fallback snippet' },
@@ -69,15 +70,15 @@ describe('CrossEncoderReranker.scoreAll', () => {
   it('text_pair includes title and content separated by newlines', async () => {
     const seenPairs: string[] = [];
     const r = new CrossEncoderReranker('mock-model');
-    (r as unknown as Record<string, unknown>)['pipeline'] = async (
-      inputs: Array<{ text: string; text_pair: string }>,
-    ) => {
-      seenPairs.push(...inputs.map((x) => x.text_pair));
-      return inputs.map(() => [
-        { label: 'LABEL_0', score: 0.1 },
-        { label: 'LABEL_1', score: 0.9 },
-      ]);
-    };
+    (r as unknown as Record<string, unknown>)['pipeline'] =
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async (inputs: Array<{ text: string; text_pair: string }>) => {
+        seenPairs.push(...inputs.map((x) => x.text_pair));
+        return inputs.map(() => [
+          { label: 'LABEL_0', score: 0.1 },
+          { label: 'LABEL_1', score: 0.9 },
+        ]);
+      };
     await r.scoreAll('q', [{ title: 'My Title', chunkText: 'chunk body', snippet: '' }]);
     assert.ok(seenPairs[0]?.startsWith('My Title\n\n'), 'text_pair should start with title');
     assert.ok(seenPairs[0]?.includes('chunk body'), 'text_pair should include content');
@@ -85,6 +86,7 @@ describe('CrossEncoderReranker.scoreAll', () => {
 
   it('returns zeros when pipeline throws (graceful fallback)', async () => {
     const r = new CrossEncoderReranker('mock-model');
+    // eslint-disable-next-line @typescript-eslint/require-await
     (r as unknown as Record<string, unknown>)['pipeline'] = async () => {
       throw new Error('pipeline exploded');
     };
