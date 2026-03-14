@@ -106,8 +106,9 @@ function toSearchResult(r: RawResult): SearchResult {
   if (r.scores.semantic != null) matchedBy.push('semantic');
   if (r.scores.bm25 != null) matchedBy.push('bm25');
   if (r.scores.fuzzy_title != null) matchedBy.push('title');
+  const { chunkText: _chunkText, ...rest } = r;
   return {
-    ...r,
+    ...rest,
     tags,
     aliases,
     matchedBy,
