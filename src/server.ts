@@ -8,11 +8,13 @@ import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import {
   checkModelChanged,
+  getDb,
   getStats,
   getStoredEmbeddingDim,
   initVecTable,
   openDb,
   saveConfigMeta,
+  wipeDatabaseFiles,
 } from './db.js';
 import { LOCAL_MODEL, getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import {
@@ -70,6 +72,52 @@ function parseArrayParam(val: unknown): string | string[] | undefined {
     return trimmed || undefined;
   }
   return undefined;
+}
+
+async function handleReindex(
+  a: Record<string, unknown>,
+  contextLength: number,
+  modelName: string,
+  embeddingDim: number | null,
+): Promise<{ indexed: number; skipped: number; errors: unknown[] }> {
+  if (a.path) {
+    const fullPath = join(config.vaultPath, a.path as string);
+    const status = await indexFile(fullPath, contextLength, Boolean(a.force));
+    if (status === 'indexed') return { indexed: 1, skipped: 0, errors: [] };
+    if (status === 'skipped') return { indexed: 0, skipped: 1, errors: [] };
+    return {
+      indexed: 0,
+      skipped: 0,
+      errors: [
+        {
+          path: a.path as string,
+          error: typeof status === 'object' ? status.error : 'indexing failed',
+        },
+      ],
+    };
+  }
+  if (a.force) {
+    resetDbForForceReindex(modelName, embeddingDim);
+  }
+  const header = a.force ? 'Recreating database and indexing vault...' : 'Indexing vault...';
+  return indexVaultSync(Boolean(a.force), header);
+}
+
+function resetDbForForceReindex(modelName: string, embeddingDim: number | null): void {
+  wipeDatabaseFiles();
+  openDb();
+  saveConfigMeta({
+    vaultPath: config.vaultPath,
+    apiBaseUrl: config.apiBaseUrl,
+    apiModel: config.apiModel,
+    ignorePatternsCsv: config.ignorePatterns.join(','),
+  });
+  getDb()
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)")
+    .run(modelName);
+  if (embeddingDim !== null) {
+    initVecTable(embeddingDim);
+  }
 }
 
 async function main() {
@@ -278,33 +326,10 @@ async function main() {
       }
 
       if (name === 'reindex') {
-        if (a.path) {
-          const fullPath = join(config.vaultPath, a.path as string);
-          const status = await indexFile(fullPath, contextLength, Boolean(a.force));
-          const result =
-            status === 'indexed'
-              ? { indexed: 1, skipped: 0, errors: [] }
-              : status === 'skipped'
-                ? { indexed: 0, skipped: 1, errors: [] }
-                : {
-                    indexed: 0,
-                    skipped: 0,
-                    errors: [
-                      {
-                        path: a.path as string,
-                        error: typeof status === 'object' ? status.error : 'indexing failed',
-                      },
-                    ],
-                  };
-          return {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-          };
-        } else {
-          const result = await indexVaultSync(Boolean(a.force));
-          return {
-            content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-          };
-        }
+        const result = await handleReindex(a, contextLength, modelName, embeddingDim);
+        return {
+          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+        };
       }
 
       if (name === 'status') {

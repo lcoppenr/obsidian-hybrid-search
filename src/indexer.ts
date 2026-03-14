@@ -228,7 +228,10 @@ function renderProgressLine(processed: number, total: number, etaStr: string): s
   return `  ${bar}  ${pctLabel} (${processed}/${total} notes)${etaStr}`;
 }
 
-export async function indexVaultSync(force = false): Promise<IndexResult> {
+export async function indexVaultSync(
+  force = false,
+  header = 'Indexing vault...',
+): Promise<IndexResult> {
   const files = scanVault();
   const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));
   cleanupStaleNotes(fsPaths);
@@ -245,7 +248,7 @@ export async function indexVaultSync(force = false): Promise<IndexResult> {
   const isTTY = process.stderr.isTTY === true;
   const logEvery = Math.max(config.batchSize, Math.floor(files.length / 10));
 
-  process.stderr.write(`Indexing vault...\n`);
+  process.stderr.write(`${header}\n`);
   if (isTTY) {
     // Print initial empty bar without newline — will be overwritten in-place
     process.stderr.write(renderProgressLine(0, files.length, ''));

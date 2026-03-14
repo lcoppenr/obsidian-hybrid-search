@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { statSync } from 'node:fs';
+import { statSync, unlinkSync } from 'node:fs';
 import * as sqliteVec from 'sqlite-vec';
 import { config } from './config.js';
 import { isIgnored } from './ignore.js';
@@ -186,6 +186,26 @@ export function openDb(): DB {
 export function getDb(): DB {
   if (!_db) throw new Error('Database not initialized. Call openDb() first.');
   return _db;
+}
+
+/**
+ * Close the current DB connection (if open) and delete all DB files
+ * (.db, .db-shm, .db-wal). Safe to call when no connection is open.
+ * After this call _db is null — caller must openDb() before using the DB again.
+ */
+export function wipeDatabaseFiles(): void {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+  const dbPath = config.dbPath;
+  for (const ext of ['', '-shm', '-wal']) {
+    try {
+      unlinkSync(dbPath + ext);
+    } catch {
+      // File doesn't exist — ok
+    }
+  }
 }
 
 export function initVecTable(dim: number): void {
@@ -565,7 +585,8 @@ export function updateLastIndexed(): void {
 
 /**
  * Check if the embedding model has changed since last run.
- * If it has, wipe all notes, chunks, and vectors so a fresh reindex is forced.
+ * If it has, delete all DB files and start fresh so the schema is rebuilt
+ * with the correct vector dimensions.
  * Returns true if the model changed (caller should force-reindex).
  */
 export function checkModelChanged(model: string): boolean {
@@ -574,19 +595,22 @@ export function checkModelChanged(model: string): boolean {
     | { value: string }
     | undefined;
 
-  if (stored?.value === model) {
+  if (stored?.value === model) return false;
+
+  if (!stored) {
+    // First run — just store the model name, no wipe needed
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)").run(
+      model,
+    );
     return false;
   }
 
-  // Model changed — wipe everything
-  db.exec('DROP TABLE IF EXISTS vec_chunks');
-  db.exec('DELETE FROM chunks');
-  db.exec('DELETE FROM links');
-  db.exec('DELETE FROM notes');
-  db.exec("DELETE FROM settings WHERE key IN ('embedding_dim', 'last_indexed')");
-  db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)").run(
-    model,
-  );
-
+  // Model changed — drop all DB files and recreate from scratch
+  process.stderr.write(`Embedding model changed: ${stored.value} → ${model}\n`);
+  wipeDatabaseFiles();
+  openDb();
+  getDb()
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)")
+    .run(model);
   return true;
 }

@@ -15,6 +15,7 @@ import {
   initVecTable,
   openDb,
   saveConfigMeta,
+  wipeDatabaseFiles,
 } from './db.js';
 import { LOCAL_MODEL, getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import { getIndexingStatus, indexFile, indexVaultSync } from './indexer.js';
@@ -386,6 +387,9 @@ program
   .description('Reindex the vault or a specific file')
   .option('--force', 'Force reindex even if unchanged')
   .action(async (filePath: string | undefined, opts: ReindexOpts) => {
+    if (opts.force && !filePath) {
+      wipeDatabaseFiles();
+    }
     const contextLength = await init();
 
     if (filePath) {
@@ -412,7 +416,8 @@ program
         ),
       );
     } else {
-      await indexVaultSync(opts.force);
+      const header = opts.force ? 'Recreating database and indexing vault...' : 'Indexing vault...';
+      await indexVaultSync(opts.force, header);
     }
   });
 
