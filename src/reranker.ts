@@ -73,8 +73,46 @@ export class CrossEncoderReranker {
   /** Separated for testability — tests can override _loadModel to count invocations. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- @xenova/transformers has no types
   protected async _loadModel(): Promise<any> {
-    const { pipeline } = await import('@xenova/transformers');
-    return pipeline('text-classification', this.modelName);
+    // We intentionally bypass the high-level pipeline() here. TextClassificationPipeline:
+    // 1. Does not pass text_pair to the tokenizer, so pairs are never encoded together.
+    // 2. Always applies softmax — useless for BGE reranker (1 output neuron → always 1.0).
+    // Instead, load tokenizer + model directly and return raw logits as relevance scores.
+    const { AutoTokenizer, AutoModelForSequenceClassification } =
+      await import('@xenova/transformers');
+    const [tokenizer, model] = await Promise.all([
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- no types
+      (AutoTokenizer as any).from_pretrained(this.modelName) as Promise<unknown>,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- no types
+      (AutoModelForSequenceClassification as any).from_pretrained(
+        this.modelName,
+      ) as Promise<unknown>,
+    ]);
+
+    // Return a function with the same signature as the pipeline mock used in tests:
+    // (inputs: Array<{text, text_pair}>, opts?) => Array<Array<{label, score}>>
+    // LABEL_1 score = raw relevance logit (higher = more relevant, matches BGE reranker convention)
+    return async (inputs: Array<{ text: string; text_pair: string }>) => {
+      const queries = inputs.map((c) => c.text);
+      const docs = inputs.map((c) => c.text_pair);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- no types
+      const encoded = (tokenizer as any)(queries, {
+        text_pair: docs,
+        padding: true,
+        truncation: true,
+      }) as unknown;
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- no types
+      const { logits } = (await (model as any)(encoded)) as {
+        logits: { data: Float32Array; dims: number[] };
+      };
+      // logits shape: [batch_size, num_labels]
+      // - 1 label (bge-reranker-base/large): single regression logit
+      // - 2 labels (bge-reranker-v2-m3): LABEL_0=not relevant, LABEL_1=relevant
+      // Use the last label's logit as the relevance score (works for both cases)
+      const numLabels = logits.dims[1] ?? 1;
+      return inputs.map((_, i) => [
+        { label: 'LABEL_1', score: logits.data[i * numLabels + (numLabels - 1)] ?? 0 },
+      ]);
+    };
   }
 }
 
