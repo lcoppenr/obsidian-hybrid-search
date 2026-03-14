@@ -89,11 +89,11 @@
   },
   {
     "id": "q012",
-    "query": "reuse a consistent structure across notes",
+    "query": "insert pre-defined snippets of text into notes",
     "relevant_paths": ["Plugins/Templates.md"],
     "partial_paths": ["Plugins/Daily notes.md"],
-    "category": "conceptual",
-    "notes": "paraphrase of 'templates' without using the word"
+    "category": "keyword",
+    "notes": "uses vocabulary from the file itself ('pre-defined snippets'); previous query 'reuse a consistent structure' had zero vocab overlap with Templates.md and was unmeasurable"
   },
   {
     "id": "q013",
@@ -105,11 +105,11 @@
   },
   {
     "id": "q014",
-    "query": "organize notes with labels or categories",
+    "query": "add keywords or topics to notes for filtering",
     "relevant_paths": ["Editing and formatting/Tags.md"],
     "partial_paths": ["Plugins/Tags view.md"],
     "category": "conceptual",
-    "notes": "labels/categories → tags; does not use 'tags' keyword"
+    "notes": "Tags.md opens with 'Tags are keywords or topics'; previous query 'labels or categories' had zero overlap — neither word appears in the file"
   },
   {
     "id": "q015",
