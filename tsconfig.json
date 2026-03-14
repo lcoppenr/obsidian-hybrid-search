@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["src", "test"]
+  "include": ["src", "test", "eval"]
 }

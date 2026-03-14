@@ -15,3 +15,5 @@ reports/
 opencode.json
 .zed/
 .worktrees/
+eval/golden-sets/personal.json
+eval/results/*.json

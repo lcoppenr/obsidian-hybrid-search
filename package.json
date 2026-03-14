@@ -13,8 +13,10 @@
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "coverage": "vitest run --coverage",
-    "lint": "eslint src test",
-    "lint:fix": "eslint src test --fix",
+    "eval": "tsx eval/evaluate.ts",
+    "eval:compare": "tsx eval/compare.ts",
+    "lint": "eslint src test eval",
+    "lint:fix": "eslint src test eval --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "knip": "knip"

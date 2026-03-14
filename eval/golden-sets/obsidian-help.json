@@ -1,0 +1,162 @@
+[
+  {
+    "id": "q001",
+    "query": "how to create internal links between notes",
+    "relevant_paths": ["Linking notes and files/Internal links.md"],
+    "partial_paths": ["Getting started/Link notes.md"],
+    "category": "keyword",
+    "notes": "core Obsidian feature; 'Internal links' is the canonical term"
+  },
+  {
+    "id": "q002",
+    "query": "frontmatter properties in notes",
+    "relevant_paths": ["Editing and formatting/Properties.md"],
+    "partial_paths": ["Editing and formatting/Advanced formatting syntax.md"],
+    "category": "keyword",
+    "notes": "YAML frontmatter / note metadata; called 'Properties' in Obsidian"
+  },
+  {
+    "id": "q003",
+    "query": "how to use tags to organize notes",
+    "relevant_paths": ["Editing and formatting/Tags.md"],
+    "partial_paths": ["Plugins/Tags view.md"],
+    "category": "keyword",
+    "notes": "tagging system; Tags view is a UI companion"
+  },
+  {
+    "id": "q004",
+    "query": "keyboard shortcuts and hotkeys",
+    "relevant_paths": ["User interface/Hotkeys.md"],
+    "partial_paths": ["Editing and formatting/Editing shortcuts.md"],
+    "category": "keyword",
+    "notes": "Hotkeys is the settings panel; editing shortcuts covers editor-level bindings"
+  },
+  {
+    "id": "q005",
+    "query": "canvas infinite whiteboard plugin",
+    "relevant_paths": ["Plugins/Canvas.md"],
+    "partial_paths": [],
+    "category": "keyword",
+    "notes": "Canvas is a core plugin for freeform note layouts"
+  },
+  {
+    "id": "q006",
+    "query": "note templates reuse structure",
+    "relevant_paths": ["Plugins/Templates.md"],
+    "partial_paths": ["Plugins/Daily notes.md"],
+    "category": "keyword",
+    "notes": "Templates plugin; Daily notes uses templates as well"
+  },
+  {
+    "id": "q007",
+    "query": "search inside vault",
+    "relevant_paths": ["Plugins/Search.md"],
+    "partial_paths": ["Plugins/Quick switcher.md"],
+    "category": "keyword",
+    "notes": "Search plugin for full-text search; Quick switcher is file-search"
+  },
+  {
+    "id": "q008",
+    "query": "callout boxes and admonitions",
+    "relevant_paths": ["Editing and formatting/Callouts.md"],
+    "partial_paths": [],
+    "category": "keyword",
+    "notes": "Obsidian's callout syntax (> [!info])"
+  },
+  {
+    "id": "q009",
+    "query": "backlinks to a note",
+    "relevant_paths": ["Plugins/Backlinks.md"],
+    "partial_paths": ["Linking notes and files/Internal links.md"],
+    "category": "keyword",
+    "notes": "Backlinks plugin shows incoming links to current note"
+  },
+  {
+    "id": "q010",
+    "query": "daily notes journaling plugin",
+    "relevant_paths": ["Plugins/Daily notes.md"],
+    "partial_paths": ["Plugins/Templates.md"],
+    "category": "keyword",
+    "notes": "Daily notes creates dated notes automatically"
+  },
+  {
+    "id": "q011",
+    "query": "connect notes and see how they relate",
+    "relevant_paths": ["Plugins/Graph view.md"],
+    "partial_paths": ["Linking notes and files/Internal links.md"],
+    "category": "conceptual",
+    "notes": "conceptual phrasing for the graph; may also surface internal links"
+  },
+  {
+    "id": "q012",
+    "query": "reuse a consistent structure across notes",
+    "relevant_paths": ["Plugins/Templates.md"],
+    "partial_paths": ["Plugins/Daily notes.md"],
+    "category": "conceptual",
+    "notes": "paraphrase of 'templates' without using the word"
+  },
+  {
+    "id": "q013",
+    "query": "visualize knowledge graph of notes",
+    "relevant_paths": ["Plugins/Graph view.md"],
+    "partial_paths": ["Plugins/Backlinks.md"],
+    "category": "conceptual",
+    "notes": "knowledge graph is a synonym; backlinks is related"
+  },
+  {
+    "id": "q014",
+    "query": "organize notes with labels or categories",
+    "relevant_paths": ["Editing and formatting/Tags.md"],
+    "partial_paths": ["Plugins/Tags view.md"],
+    "category": "conceptual",
+    "notes": "labels/categories → tags; does not use 'tags' keyword"
+  },
+  {
+    "id": "q015",
+    "query": "switch between reading and editing mode",
+    "relevant_paths": ["Editing and formatting/Views and editing mode.md"],
+    "partial_paths": ["Editing and formatting/Basic formatting syntax.md"],
+    "category": "conceptual",
+    "notes": "Live preview vs reading view vs source mode"
+  },
+  {
+    "id": "q016",
+    "query": "как работает граф связей между заметками",
+    "relevant_paths": ["Plugins/Graph view.md"],
+    "partial_paths": ["Plugins/Backlinks.md"],
+    "category": "multilingual",
+    "notes": "Russian: 'how does the connection graph between notes work'"
+  },
+  {
+    "id": "q017",
+    "query": "теги для организации заметок в хранилище",
+    "relevant_paths": ["Editing and formatting/Tags.md"],
+    "partial_paths": ["Plugins/Tags view.md"],
+    "category": "multilingual",
+    "notes": "Russian: 'tags for organizing notes in the vault'"
+  },
+  {
+    "id": "q018",
+    "query": "математические формулы в заметках",
+    "relevant_paths": ["Editing and formatting/Advanced formatting syntax.md"],
+    "partial_paths": [],
+    "category": "multilingual",
+    "notes": "Russian: 'mathematical formulas in notes' → MathJax section in Advanced formatting"
+  },
+  {
+    "id": "q019",
+    "query": "callout syntax warning info tip block",
+    "relevant_paths": ["Editing and formatting/Callouts.md"],
+    "partial_paths": ["Editing and formatting/Advanced formatting syntax.md"],
+    "category": "syntax",
+    "notes": "tests Obsidian-specific callout type names"
+  },
+  {
+    "id": "q020",
+    "query": "block reference embed section of another note",
+    "relevant_paths": ["Linking notes and files/Internal links.md"],
+    "partial_paths": ["Linking notes and files/Embed files.md"],
+    "category": "syntax",
+    "notes": "block references (^id syntax) live in Internal links; embed files covers ![[]] embeds"
+  }
+]
