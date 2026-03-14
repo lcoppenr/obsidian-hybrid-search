@@ -5,6 +5,19 @@ interface Chunk {
   headingChain: string[];
 }
 
+const SKIP_PATTERNS = [
+  /^#{1,6}\s*$/, // heading without content
+  /^-{3,}$/, // horizontal separator
+  /^(TODO|FIXME|NOTE):?\s*$/, // markers without text
+  /^\[\[.+\]\]$/, // only wikilink, no surrounding text
+  /^!\[.*\]\(.+\)$/, // only image embed
+];
+
+function shouldSkipChunk(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.length < config.chunkMinLength || SKIP_PATTERNS.some((p) => p.test(trimmed));
+}
+
 export function estimateTokens(text: string): number {
   // Cyrillic and other non-ASCII scripts: ~1 char per token
   // ASCII (English): ~4 chars per token
@@ -38,7 +51,7 @@ export function splitBySections(content: string): Section[] {
 
   const flush = () => {
     const body = currentBody.join('\n');
-    if (body.trim().length >= config.chunkMinLength) {
+    if (!shouldSkipChunk(body)) {
       const text = currentHeading ? `${currentHeading}\n${body}`.trim() : body.trim();
       sections.push({ heading: currentHeading, headingChain: currentHeadingChain, body, text });
     }
@@ -94,7 +107,7 @@ export function slidingWindow(
     }
 
     const chunk = text.slice(start, end).trim();
-    if (chunk.length >= config.chunkMinLength) {
+    if (!shouldSkipChunk(chunk)) {
       chunks.push({ text: chunk, headingChain });
     }
     if (end >= text.length) break;
@@ -126,7 +139,7 @@ export function chunkNote(content: string, contextLength: number): Chunk[] {
 
   const chunks: Chunk[] = [];
   for (const section of sections) {
-    if (section.body.trim().length < config.chunkMinLength) continue;
+    if (shouldSkipChunk(section.body)) continue;
     if (estimateTokens(section.text) <= contextLength) {
       chunks.push({ text: section.text, headingChain: section.headingChain });
     } else {
