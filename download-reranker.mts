@@ -1,4 +1,8 @@
-import { AutoTokenizer, AutoModelForSequenceClassification } from '@huggingface/transformers';
+import os from 'node:os';
+import path from 'node:path';
+import { AutoTokenizer, AutoModelForSequenceClassification, env } from '@huggingface/transformers';
+
+env.cacheDir = path.join(os.homedir(), '.cache', 'huggingface');
 
 const MODEL = 'onnx-community/bge-reranker-v2-m3-ONNX';
 console.log(`Downloading ${MODEL} (int8 quantized, ~32MB)...`);

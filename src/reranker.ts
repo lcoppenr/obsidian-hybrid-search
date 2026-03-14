@@ -1,3 +1,5 @@
+import os from 'node:os';
+import path from 'node:path';
 import { config } from './config.js';
 
 export interface RerankCandidate {
@@ -87,8 +89,10 @@ export class CrossEncoderReranker {
     // 1. Does not pass text_pair to the tokenizer, so pairs are never encoded together.
     // 2. Always applies softmax — useless for BGE reranker (1 output neuron → always 1.0).
     // Instead, load tokenizer + model directly and return raw logits as relevance scores.
-    const { AutoTokenizer, AutoModelForSequenceClassification } =
+    const { AutoTokenizer, AutoModelForSequenceClassification, env } =
       await import('@huggingface/transformers');
+    // Redirect cache to ~/.cache/huggingface so models survive npm install / node_modules wipes.
+    env.cacheDir = path.join(os.homedir(), '.cache', 'huggingface');
     const [tokenizer, model] = await Promise.all([
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- no types
       (AutoTokenizer as any).from_pretrained(this.modelName) as Promise<unknown>,

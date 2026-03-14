@@ -1,6 +1,12 @@
+import os from 'node:os';
+import path from 'node:path';
 import { config } from './config.js';
 
 export const LOCAL_MODEL = 'Xenova/multilingual-e5-small';
+
+function getCacheDir(): string {
+  return path.join(os.homedir(), '.cache', 'huggingface');
+}
 
 let localPipeline: any = null;
 let cachedContextLength: number | null = null;
@@ -179,7 +185,10 @@ export function primeEmbeddingDim(dim: number): void {
 
 async function getLocalPipeline() {
   if (!localPipeline) {
-    const { pipeline } = await import('@huggingface/transformers');
+    const { pipeline, env } = await import('@huggingface/transformers');
+    // Redirect cache to ~/.cache/huggingface so models survive npm install / node_modules wipes.
+    // @huggingface/transformers v3 does not read HF_HOME — env.cacheDir must be set explicitly.
+    env.cacheDir = getCacheDir();
     localPipeline = await pipeline('feature-extraction', LOCAL_MODEL, {
       // device:'cpu' avoids silent fp32 fallback that occurs when 'auto' selects
       // an EP (CoreML/CUDA) that doesn't support the model's ONNX opsets.
