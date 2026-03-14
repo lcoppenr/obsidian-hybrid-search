@@ -42,10 +42,12 @@ interface RawResult {
   aliases?: string | null;
   snippet: string;
   score: number;
+  chunkText?: string; // best chunk text for reranker input
   scores: {
     semantic?: number;
     bm25?: number;
     fuzzy_title?: number;
+    hybrid?: number; // RRF score, set when mode='hybrid'
   };
 }
 
@@ -379,6 +381,7 @@ async function searchVector(queryEmbedding: Float32Array, limit: number): Promis
           tags: row.tags ?? '[]',
           aliases: row.aliases,
           snippet: row.chunk_index > 0 ? '...' + row.chunk_text : row.chunk_text,
+          chunkText: row.chunk_text,
           score: similarity,
           scores: { semantic: similarity },
         };
