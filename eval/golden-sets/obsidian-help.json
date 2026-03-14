@@ -115,9 +115,9 @@
     "id": "q015",
     "query": "switch between reading and editing mode",
     "relevant_paths": ["Editing and formatting/Views and editing mode.md"],
-    "partial_paths": ["Editing and formatting/Basic formatting syntax.md"],
+    "partial_paths": [],
     "category": "conceptual",
-    "notes": "Live preview vs reading view vs source mode"
+    "notes": "Live preview vs reading view vs source mode; Basic formatting syntax.md is not relevant here"
   },
   {
     "id": "q016",
@@ -147,9 +147,9 @@
     "id": "q019",
     "query": "callout syntax warning info tip block",
     "relevant_paths": ["Editing and formatting/Callouts.md"],
-    "partial_paths": ["Editing and formatting/Advanced formatting syntax.md"],
+    "partial_paths": [],
     "category": "syntax",
-    "notes": "tests Obsidian-specific callout type names"
+    "notes": "tests Obsidian-specific callout type names; Advanced formatting syntax.md does not cover callouts"
   },
   {
     "id": "q020",
