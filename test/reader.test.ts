@@ -108,6 +108,10 @@ describe('readNotes() — miss', () => {
     assert.strictEqual(result.found, false);
     if (result.found) return;
     assert.ok(Array.isArray(result.suggestions));
+    assert.ok(
+      result.suggestions.includes('notes/alpha.md'),
+      'suggestions should include notes/alpha.md',
+    );
   });
 
   it('does not throw when all paths miss', () => {
