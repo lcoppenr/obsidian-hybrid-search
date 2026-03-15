@@ -191,7 +191,7 @@ Then reload (`source ~/.zshrc`) and use:
 ```bash
 ohs "zettelkasten"                        # hybrid search
 ohss "how to build a knowledge graph"     # semantic
-ohst "zettelkasten"                        # fuzzy title (typo-tolerant)
+ohst "zettelkasten"                       # fuzzy title (typo-tolerant)
 ohsf "permanent notes"                    # fulltext BM25
 ohsi                                      # reindex vault
 ohsst                                     # show status

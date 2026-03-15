@@ -901,8 +901,15 @@ async function searchByQuery(
     f32 ? searchVector(f32, candidateLimit) : Promise.resolve([]),
   ]);
 
-  // Weights reflect signal reliability: BM25 (exact keyword) > semantic > fuzzy_title (partial)
-  let results = rrfFusion([vectorResults, bm25Results, fuzzyResults], 60, [1.0, 2.0, 0.5]);
+  // Exact alias matches (fuzzy_title=1.0) are canonical identity signals — treated like BM25.
+  // Partial fuzzy matches (trigram overlap < 1.0) remain at low weight to avoid false positives.
+  const exactAliasResults = fuzzyResults.filter((r) => r.scores.fuzzy_title === 1.0);
+  const partialFuzzyResults = fuzzyResults.filter((r) => r.scores.fuzzy_title !== 1.0);
+  let results = rrfFusion(
+    [vectorResults, bm25Results, exactAliasResults, partialFuzzyResults],
+    60,
+    [1.0, 2.0, 2.0, 0.5],
+  );
 
   // Populate scores.hybrid for hybrid mode — always, regardless of rerank flag
   for (const r of results) {

@@ -486,6 +486,109 @@ describe('alias exact-match search', () => {
   });
 });
 
+// ─── Alias-only hybrid surface (S-66) ────────────────────────────────────────
+// A note whose title/content contains nothing about a concept but has an exact
+// alias matching the query should surface in hybrid results. Before the fix,
+// exactAliasResults used weight=0.5 (same as partial fuzzy), so a content-poor
+// alias-match note was buried under notes with richer content. After the fix,
+// exactAliasResults use weight=2.0 (same as BM25), ensuring the note appears.
+
+describe('alias-only hybrid surface (S-66)', () => {
+  // Two notes inserted in beforeAll above:
+  //   zk-system.md: title="Zettelkasten System", alias="ЗК" — the alias-only scenario
+  //   pkm-intro.md: alias="Personal Knowledge Management", content="Overview of PKM practices."
+  //
+  // We add two more specifically for S-66:
+  //   s66-alias-only.md — title/content have no "ZKTERM66", but alias = "ZKTERM66"
+  //   s66-content.md    — has "ZKTERM66" in content (BM25 match)
+
+  beforeAll(() => {
+    upsertNote({
+      path: 's66-alias-only.md',
+      title: 'Концепция без содержимого',
+      tags: [],
+      aliases: ['ZKTERM66'],
+      content: 'Краткое описание без ключевого слова.',
+      mtime: Date.now(),
+      hash: 'hash-s66-alias',
+      chunks: [
+        {
+          text: 'Краткое описание без ключевого слова.',
+          embedding: fakeEmbedding,
+        },
+      ],
+    });
+
+    upsertNote({
+      path: 's66-content.md',
+      title: 'ZKTERM66 guide',
+      tags: [],
+      aliases: [],
+      content: 'ZKTERM66 is an important concept with rich content and multiple references.',
+      mtime: Date.now(),
+      hash: 'hash-s66-content',
+      chunks: [
+        {
+          text: 'ZKTERM66 is an important concept with rich content and multiple references.',
+          embedding: fakeEmbedding,
+        },
+      ],
+    });
+  });
+
+  it('alias-only note surfaces in hybrid results even without content/title match', async () => {
+    const results = await search('ZKTERM66', { mode: 'hybrid', limit: 20 });
+    const aliasNote = results.find((r) => r.path === 's66-alias-only.md');
+    assert.ok(
+      aliasNote,
+      `s66-alias-only.md should appear in hybrid results for its alias "ZKTERM66", got: ${JSON.stringify(results.map((r) => r.path))}`,
+    );
+  });
+
+  it('alias-only note has fuzzy_title score set and matchedBy includes "title"', async () => {
+    const results = await search('ZKTERM66', { mode: 'hybrid', limit: 20 });
+    const aliasNote = results.find((r) => r.path === 's66-alias-only.md');
+    assert.ok(aliasNote, 's66-alias-only.md should be in results');
+    assert.ok(
+      aliasNote.scores.fuzzy_title !== null,
+      'alias match should produce a fuzzy_title score',
+    );
+    assert.ok(
+      aliasNote.matchedBy.includes('title'),
+      `matchedBy should include "title", got: ${JSON.stringify(aliasNote.matchedBy)}`,
+    );
+  });
+
+  it('alias-only note scores above 0 and appears before the result list is cut', async () => {
+    // s66-alias-only.md has alias "ZKTERM66" — the alias IS indexed in BM25 (aliases column,
+    // weight 5.0), so it matches via BM25 + exactAlias. The key invariant is that both
+    // notes surface, not which one is higher (that depends on BM25 rank positions).
+    const results = await search('ZKTERM66', { mode: 'hybrid', limit: 20 });
+    const aliasNote = results.find((r) => r.path === 's66-alias-only.md');
+    const contentNote = results.find((r) => r.path === 's66-content.md');
+    assert.ok(aliasNote, 's66-alias-only.md should appear in results');
+    assert.ok(contentNote, 's66-content.md should appear in results');
+    assert.ok(aliasNote.score > 0, `alias-only note should have positive score, got ${aliasNote.score}`);
+  });
+
+  it('exact alias match scores higher than partial fuzzy title match', async () => {
+    // s66-alias-only.md: exact alias match (weight 2.0)
+    // s60-fuzzy.md: partial trigram match on title "bsonlyterm relevant idea" for query "ZKTERM66"
+    //   — low overlap, weight 0.5 (partial fuzzy path)
+    // Exact alias (weight=2.0) should beat random partial fuzzy hits.
+    const results = await search('ZKTERM66', { mode: 'hybrid', limit: 20 });
+    const aliasNote = results.find((r) => r.path === 's66-alias-only.md');
+    const partialFuzzy = results.find((r) => r.path === 's60-fuzzy.md');
+    if (aliasNote && partialFuzzy) {
+      assert.ok(
+        aliasNote.score >= partialFuzzy.score,
+        `exact alias note (${aliasNote.score}) should outrank partial fuzzy match (${partialFuzzy.score})`,
+      );
+    }
+    // If partialFuzzy doesn't appear at all for "ZKTERM66", alias-only still present — that's fine.
+  });
+});
+
 // ─── RRF normalization with empty lists (S-30) ────────────────────────────────
 // When semantic list is empty (no API key / local model), maxPossibleScore must
 // be computed from active lists only, so the best reachable score is 1.0, not 0.67.
