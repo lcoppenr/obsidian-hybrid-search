@@ -299,7 +299,7 @@ async function main() {
       {
         name: 'read',
         description:
-          "Fetch one or more Obsidian notes by vault-relative path and return their full content with metadata. " +
+          'Fetch one or more Obsidian notes by vault-relative path and return their full content with metadata. ' +
           'Use after search or related traversal to read the actual content of notes you found. ' +
           'Returns title, aliases, tags, content (full text), links (outgoing wikilinks), and backlinks. ' +
           'On path miss: returns found:false with top-3 fuzzy title suggestions — does not throw. ' +
