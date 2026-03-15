@@ -479,9 +479,12 @@ program
       for (const r of results) {
         if (!r.found) {
           if (multi) process.stdout.write('\n');
-          console.log(`── ${r.path} [NOT FOUND]`);
+          console.log(`Note "${r.path}" not found.`);
           if (r.suggestions.length > 0) {
-            console.log(`   Did you mean: ${r.suggestions.join(', ')}`);
+            console.log('Did you mean:');
+            for (const s of r.suggestions) {
+              console.log(`  · ${s}`);
+            }
           }
           continue;
         }
