@@ -477,9 +477,13 @@ program
 
       const multi = results.length > 1;
       for (const r of results) {
+        if (multi) {
+          const header = `── ${r.path} `;
+          const line = header + '─'.repeat(Math.max(0, 72 - header.length));
+          console.log(`\n${line}\n`);
+        }
         if (!r.found) {
-          if (multi) process.stdout.write('\n');
-          console.log(`Note "${r.path}" not found.`);
+          console.log(multi ? 'Not found.' : `Note "${r.path}" not found.`);
           if (r.suggestions.length > 0) {
             console.log('Did you mean:');
             for (const s of r.suggestions) {
@@ -487,11 +491,6 @@ program
             }
           }
           continue;
-        }
-        if (multi) {
-          const header = `── ${r.path} `;
-          const line = header + '─'.repeat(Math.max(0, 72 - header.length));
-          console.log(`\n${line}\n`);
         }
         process.stdout.write(r.content);
         if (!r.content.endsWith('\n')) process.stdout.write('\n');
