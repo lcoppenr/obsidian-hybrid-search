@@ -475,26 +475,23 @@ program
         return;
       }
 
+      const multi = results.length > 1;
       for (const r of results) {
         if (!r.found) {
-          console.log(`\n── ${r.path} [NOT FOUND]`);
+          if (multi) process.stdout.write('\n');
+          console.log(`── ${r.path} [NOT FOUND]`);
           if (r.suggestions.length > 0) {
             console.log(`   Did you mean: ${r.suggestions.join(', ')}`);
           }
           continue;
         }
-        const meta: string[] = [];
-        if (r.tags.length > 0) {
-          const tagStr = r.tags.map((t) => `#${t}`).join(', ');
-          meta.push(`tags: ${tagStr}`);
+        if (multi) {
+          const header = `── ${r.path} `;
+          const line = header + '─'.repeat(Math.max(0, 72 - header.length));
+          console.log(`\n${line}\n`);
         }
-        if (r.aliases.length > 0) meta.push(`aliases: ${r.aliases.join(', ')}`);
-        if (r.links.length > 0) meta.push(`links: ${r.links.length}`);
-        if (r.backlinks.length > 0) meta.push(`backlinks: ${r.backlinks.length}`);
-        console.log(`\n── ${r.path}`);
-        console.log(`   ${r.title}${meta.length > 0 ? '  |  ' + meta.join('  |  ') : ''}`);
-        console.log('');
-        console.log(r.content);
+        process.stdout.write(r.content);
+        if (!r.content.endsWith('\n')) process.stdout.write('\n');
       }
     },
   );
