@@ -21,6 +21,7 @@ import {
 import { LOCAL_MODEL, getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import { getIndexingStatus, indexFile, indexVaultSync } from './indexer.js';
 import { readNotes, search } from './searcher.js';
+import { handleStdioLine } from './stdio-server.js';
 
 const execAsync = promisify(exec);
 
@@ -536,6 +537,29 @@ program
       }
     },
   );
+
+program
+  .command('serve')
+  .description('Start a persistent search server')
+  .option('--stdio', 'Use JSON-over-stdin/stdout transport (LSP-style, for Obsidian plugin IPC)')
+  .action(async (opts: { stdio?: boolean }) => {
+    if (!opts.stdio) {
+      console.error('Error: specify a transport. Available: --stdio');
+      process.exit(1);
+    }
+
+    await init();
+    process.stdout.write(JSON.stringify({ ready: true }) + '\n');
+
+    const { createInterface } = await import('node:readline');
+    const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      await handleStdioLine(line, search, (s) => process.stdout.write(s + '\n'));
+    }
+
+    process.exit(0);
+  });
 
 program.parseAsync(process.argv).catch((err) => {
   console.error('Error:', err instanceof Error ? err.message : String(err));

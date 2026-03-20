@@ -23,7 +23,7 @@ export interface NoteReadMiss {
 
 export type ReadResult = NoteReadResult | NoteReadMiss;
 
-interface SearchResult {
+export interface SearchResult {
   path: string;
   title: string;
   tags: string[];
@@ -43,7 +43,7 @@ interface SearchResult {
   };
 }
 
-interface SearchOptions {
+export interface SearchOptions {
   mode?: 'hybrid' | 'semantic' | 'fulltext' | 'title';
   scope?: string | string[];
   limit?: number;
