@@ -557,8 +557,7 @@ program
     for await (const line of rl) {
       await handleStdioLine(line, search, (s) => process.stdout.write(s + '\n'));
     }
-
-    process.exit(0);
+    // stdin closed — let Node.js exit naturally to avoid native module teardown crashes
   });
 
 program.parseAsync(process.argv).catch((err) => {
