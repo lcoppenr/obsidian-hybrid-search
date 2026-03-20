@@ -31,7 +31,7 @@ No external services required. A bundled `@huggingface/transformers` model handl
 - **Incremental indexing**
   - only re-indexes changed files; watches for edits in real time
 - **Multi-query fan-out**
-  - pass multiple queries at once (`ohs search "q1" "q2"` or `queries[]` in MCP); results are merged via RRF — a note that ranks well in any one query floats to the top; useful when the note may use different vocabulary than the query
+  - pass multiple queries at once (`ohs "q1" "q2"` or `queries[]` in MCP); results are merged via RRF — a note that ranks well in any one query floats to the top; useful when the note may use different vocabulary than the query
 - **Cross-encoder reranking**
   - `--rerank` re-scores results with `bge-reranker-v2-m3` (ONNX int8, ~570 MB download once); improves precision for conceptual and multilingual queries; applied after multi-query merge
 - **Local embeddings**
@@ -53,14 +53,63 @@ npx obsidian-hybrid-search
 
 ## CLI usage
 
-The tool auto-discovers the database by walking up from the current directory looking for `.obsidian-hybrid-search.db`. The simplest way to use it — run from inside your vault:
+### Quick start
+
+**Option A — recommended: set `OBSIDIAN_VAULT_PATH` once in your shell profile.**
+
+This lets you run the tool from any directory. Add to `~/.zshrc` or `~/.bashrc`:
 
 ```bash
-cd /path/to/your/vault
+export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
+```
+
+Then reload (`source ~/.zshrc`) and index your vault once:
+
+```bash
+obsidian-hybrid-search reindex
+```
+
+After that you can search from any directory:
+
+```bash
 obsidian-hybrid-search "zettelkasten"
 ```
 
-### Two ways to search
+---
+
+**Option B — no env var: run from inside your vault.**
+
+The tool detects the vault root by looking for the `.obsidian/` folder, walking up from the current directory. `cd` into your vault (or any subfolder) and run:
+
+```bash
+cd /path/to/your/vault
+obsidian-hybrid-search reindex   # detects vault root, creates DB, indexes everything
+obsidian-hybrid-search "zettelkasten"
+```
+
+Commands work from any directory inside the vault tree. From outside the vault (e.g. via shell aliases called from `~`), use Option A or pass `--db /path/to/vault/.obsidian-hybrid-search.db` explicitly.
+
+---
+
+**Optional: remote embedding API instead of local model.**
+
+By default the local `Xenova/multilingual-e5-small` model is used — works offline, no API key needed. Downloads ~117 MB on first run. Supports 100+ languages including Russian, Chinese, Japanese, and more.
+
+To use a remote API instead, add to your shell profile:
+
+```bash
+export OPENAI_API_KEY="sk-..."
+
+# Default API base is https://api.openai.com/v1 — override for other providers:
+# export OPENAI_BASE_URL="https://openrouter.ai/api/v1"  # OpenRouter
+# export OPENAI_BASE_URL="http://localhost:11434/v1"     # Ollama (no key needed)
+# export OPENAI_BASE_URL="http://localhost:1234/v1"      # LM Studio (no key needed)
+
+# Optional: override the embedding model (default: text-embedding-3-small)
+# export OPENAI_EMBEDDING_MODEL="text-embedding-3-small"
+```
+
+### Search modes
 
 | Scenario        | How                                                                 | Modes                                               |
 | --------------- | ------------------------------------------------------------------- | --------------------------------------------------- |
@@ -69,24 +118,6 @@ obsidian-hybrid-search "zettelkasten"
 | Graph traversal | `obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related` | Links & backlinks via BFS                           |
 
 `--mode` only affects text queries. When `--path` is given, the search is always semantic regardless of `--mode`.
-
-If you want to run it from anywhere (e.g. via shell aliases), set the environment variables explicitly. Add to your `~/.zshrc` or `~/.bashrc`:
-
-```bash
-export OBSIDIAN_VAULT_PATH="/path/to/your/vault"
-
-# Optional — only needed if using a remote embedding API instead of local model
-export OPENAI_API_KEY="sk-..."
-
-# Default API base is https://api.openai.com/v1 — override for other providers:
-# export OPENAI_BASE_URL="https://openrouter.ai/api/v1"  # OpenRouter
-# export OPENAI_BASE_URL="http://localhost:11434/v1"     # Ollama (no key needed)
-# export OPENAI_BASE_URL="http://localhost:1234/v1"      # LM Studio (no key needed)
-
-export OPENAI_EMBEDDING_MODEL="text-embedding-3-small"
-```
-
-Without `OPENAI_API_KEY` the local `Xenova/multilingual-e5-small` model is used automatically — works offline, no API key needed. Downloads ~117 MB on first run. Supports 100+ languages including Russian, Chinese, Japanese, and more.
 
 ```bash
 # Hybrid search (default)
@@ -291,7 +322,7 @@ The server exposes four tools:
 
 | Environment variable       | Default                              | Description                                                                        |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
-| `OBSIDIAN_VAULT_PATH`      | _(required)_                         | Absolute path to your vault                                                        |
+| `OBSIDIAN_VAULT_PATH`      | Required for MCP; CLI auto-detects   | Absolute path to your vault                                                        |
 | `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                    |
 | `OPENAI_API_KEY`           | —                                    | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio) |
 | `OPENAI_BASE_URL`          | `https://api.openai.com/v1`          | API base URL                                                                       |

@@ -80,35 +80,42 @@ interface SearchOpts {
 interface ReindexOpts {
   force?: boolean;
 }
+/** Walk up from cwd looking for a file/dir with the given name. Returns the containing dir or undefined. */
+function walkUpFind(name: string): string | undefined {
+  let dir = process.cwd();
+  while (true) {
+    if (existsSync(path.join(dir, name))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
 /**
  * Find .obsidian-hybrid-search.db by walking up from dir,
  * read vault_path / api_base_url / api_model from its settings table,
  * and inject them into process.env (only if not already set).
  */
-async function discoverConfig(dbPathOpt?: string): Promise<void> {
+function discoverConfig(dbPathOpt?: string): void {
   let dbFile: string | undefined = dbPathOpt;
 
   if (!dbFile) {
-    let dir = process.cwd();
-    while (true) {
-      const candidate = path.join(dir, '.obsidian-hybrid-search.db');
-      if (existsSync(candidate)) {
-        dbFile = candidate;
-        break;
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) break; // reached filesystem root
-      dir = parent;
-    }
+    const vaultDir = walkUpFind('.obsidian-hybrid-search.db');
+    if (vaultDir) dbFile = path.join(vaultDir, '.obsidian-hybrid-search.db');
   }
 
   if (!dbFile) {
     if (!process.env.OBSIDIAN_VAULT_PATH) {
-      console.error(
-        'Error: Could not find .obsidian-hybrid-search.db\n' +
-          'Run this command from inside your Obsidian vault, use --db <path>, or set OBSIDIAN_VAULT_PATH.',
-      );
-      process.exit(1);
+      const inferredVault = walkUpFind('.obsidian');
+      if (inferredVault) {
+        process.env.OBSIDIAN_VAULT_PATH = inferredVault;
+      } else {
+        console.error(
+          'Error: Could not find .obsidian-hybrid-search.db\n' +
+            'Run this command from inside your Obsidian vault, use --db <path>, or set OBSIDIAN_VAULT_PATH.',
+        );
+        process.exit(1);
+      }
     }
     return; // env vars already set — proceed normally
   }
@@ -133,7 +140,10 @@ async function discoverConfig(dbPathOpt?: string): Promise<void> {
     if (vaultPath && !process.env.OBSIDIAN_VAULT_PATH) {
       process.env.OBSIDIAN_VAULT_PATH = vaultPath;
     }
-    if (apiBaseUrl && !process.env.OPENAI_BASE_URL) {
+    // Only restore a non-default base URL — the default 'https://api.openai.com/v1'
+    // must not be written to process.env, because modelName detection in init()
+    // treats any truthy OPENAI_BASE_URL as "remote API configured" and skips local model.
+    if (apiBaseUrl && apiBaseUrl !== 'https://api.openai.com/v1' && !process.env.OPENAI_BASE_URL) {
       process.env.OPENAI_BASE_URL = apiBaseUrl;
     }
     if (apiModel && !process.env.OPENAI_EMBEDDING_MODEL) {
@@ -309,7 +319,7 @@ const program = new Command()
 
 program.hook('preAction', async (thisCommand) => {
   const opts = thisCommand.opts();
-  await discoverConfig(opts.db as string | undefined);
+  discoverConfig(opts.db as string | undefined);
 });
 
 program
@@ -412,6 +422,10 @@ program
   .description('Reindex the vault or a specific file')
   .option('--force', 'Force reindex even if unchanged')
   .action(async (filePath: string | undefined, opts: ReindexOpts) => {
+    // On a fresh install (no DB yet), always do a full reindex
+    if (!filePath && !existsSync(config.dbPath)) {
+      opts.force = true;
+    }
     if (opts.force && !filePath) {
       wipeDatabaseFiles();
     }
