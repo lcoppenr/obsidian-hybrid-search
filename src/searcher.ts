@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { config } from './config.js';
-import { getDb, getLinksForPaths, getNoteByPath, hasVecTable } from './db.js';
+import { getDb, getDbVersion, getLinksForPaths, getNoteByPath, hasVecTable } from './db.js';
 import { embed } from './embedder.js';
 import { reranker, type RerankCandidate } from './reranker.js';
 
@@ -734,11 +734,14 @@ class LRUCache<V> {
 
 const searchCache = new LRUCache<SearchResult[]>(20);
 
-let indexVersion = 0;
-
-/** Increment the index version, invalidating all cached search results. */
+/**
+ * Increment the index version. Kept for API compatibility but is now a no-op:
+ * cache invalidation is driven by getDbVersion() so that changes from any process
+ * (MCP server, plugin server, CLI) are visible to all other processes.
+ * @deprecated Call sites can be removed; bumpDbVersion() in db.ts handles this.
+ */
 export function bumpIndexVersion(): void {
-  indexVersion++;
+  // no-op: invalidation is handled via DB-level version counter
 }
 
 function cacheKey(input: string, options: SearchOptions): string {
@@ -747,7 +750,9 @@ function cacheKey(input: string, options: SearchOptions): string {
   // Include reranker model so that changing RERANKER_MODEL invalidates the cache
   const rerankStr = options.rerank ? config.rerankerModel : '';
   const queriesStr = options.queries && options.queries.length > 1 ? options.queries.join('|') : '';
-  return `v${indexVersion}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}`;
+  // getDbVersion() is a fast single-row read; it ensures any process that modifies
+  // the DB (upsertNote/deleteNote) invalidates the caches of all other processes.
+  return `v${getDbVersion()}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}`;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- primary search entry-point; complexity is inherent in the multi-mode, multi-filter pipeline

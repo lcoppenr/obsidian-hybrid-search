@@ -49,6 +49,9 @@ function runMigrations(db: DB): void {
     );
   `);
 
+  // Ensure db_version counter exists (cross-process cache invalidation)
+  db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES('db_version', '0')").run();
+
   // Incremental column migrations
   const cols = db.prepare('PRAGMA table_info(notes)').all() as { name: string }[];
   if (!cols.some((c) => c.name === 'aliases')) {
@@ -341,6 +344,7 @@ export function upsertNote(note: {
     const noteId = existing.id;
     insertChunks(db, noteId, note.chunks);
     logEvent('updated', note.path);
+    bumpDbVersion();
   } else {
     const result = db
       .prepare(
@@ -363,6 +367,7 @@ export function upsertNote(note: {
     const noteId = result.lastInsertRowid as number;
     insertChunks(db, noteId, note.chunks);
     logEvent('added', note.path);
+    bumpDbVersion();
   }
 }
 
@@ -413,6 +418,27 @@ export function deleteNote(notePath: string, keepLinks = false): void {
   }
   db.prepare('DELETE FROM notes WHERE id = ?').run(note.id);
   logEvent('deleted', notePath);
+  bumpDbVersion();
+}
+
+/**
+ * Returns the current DB mutation version — incremented on every note upsert or delete.
+ * Used as part of the search cache key so that any process (MCP server, plugin server,
+ * CLI) that modifies the DB automatically invalidates the caches of all other processes.
+ */
+export function getDbVersion(): number {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'db_version'").get() as
+    | { value: string }
+    | undefined;
+  return row ? parseInt(row.value) : 0;
+}
+
+function bumpDbVersion(): void {
+  const db = getDb();
+  db.prepare(
+    "INSERT OR REPLACE INTO settings(key, value) VALUES('db_version', CAST(COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'db_version'), 0) + 1 AS TEXT))",
+  ).run();
 }
 
 export function upsertLinks(fromPath: string, toPaths: string[]): void {
