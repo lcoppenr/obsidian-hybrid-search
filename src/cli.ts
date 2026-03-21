@@ -13,6 +13,7 @@ import {
   checkModelChanged,
   getStats,
   getStoredEmbeddingDim,
+  getStoredModel,
   initVecTable,
   openDb,
   saveConfigMeta,
@@ -168,7 +169,7 @@ function discoverConfig(dbPathOpt?: string): void {
   }
 }
 
-async function init() {
+async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
   openDb();
 
   // Persist config metadata so the DB is self-describing (mirrors server.ts)
@@ -179,10 +180,22 @@ async function init() {
     ignorePatternsCsv: config.ignorePatterns.join(','),
   });
 
-  // Check if model changed — wipes DB if so, forces full reindex (mirrors server.ts)
+  // Check if model changed — only wipe during reindex, not during serve/search/status.
+  // Wiping on serve/search would destroy the index whenever env vars are missing (e.g.
+  // when Obsidian launches without shell env vars like OPENAI_BASE_URL).
   const modelName =
     config.apiKey || process.env.OPENAI_BASE_URL ? config.apiModel : `local:${LOCAL_MODEL}`;
-  checkModelChanged(modelName);
+  if (allowWipe) {
+    checkModelChanged(modelName);
+  } else {
+    // Read-only path: warn if model differs but do not wipe
+    const stored = getStoredModel();
+    if (stored && stored !== modelName) {
+      process.stderr.write(
+        `[warn] Embedding model mismatch: DB has "${stored}", current env has "${modelName}". Semantic search may be degraded. Run reindex to rebuild vectors.\n`,
+      );
+    }
+  }
 
   // Read stored dim from DB first — avoids an API round-trip when the vault was
   // already indexed.  This is the common case and ensures that fulltext / title
@@ -430,7 +443,7 @@ program
     if (opts.force && !filePath) {
       wipeDatabaseFiles();
     }
-    const contextLength = await init();
+    const contextLength = await init({ allowWipe: true });
 
     if (filePath) {
       const fullPath = path.join(config.vaultPath, filePath);

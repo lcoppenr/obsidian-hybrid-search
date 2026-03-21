@@ -7,10 +7,10 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from './config.js';
 import {
-  checkModelChanged,
   getDb,
   getStats,
   getStoredEmbeddingDim,
+  getStoredModel,
   initVecTable,
   openDb,
   saveConfigMeta,
@@ -132,12 +132,16 @@ async function main() {
     ignorePatternsCsv: config.ignorePatterns.join(','),
   });
 
-  // Check if model changed — wipes DB if so, forces full reindex
+  // Warn if model differs but do NOT wipe — the MCP server is read-oriented.
+  // Wiping here would destroy the index whenever env vars are missing at startup.
+  // Model-change wipe is intentionally restricted to the reindex command.
   const modelName =
     config.apiKey || process.env.OPENAI_BASE_URL ? config.apiModel : `local:${LOCAL_MODEL}`;
-  const modelChanged = checkModelChanged(modelName);
-  if (modelChanged) {
-    console.error('[server] embedding model changed — database cleared, full reindex will run');
+  const storedModel = getStoredModel();
+  if (storedModel && storedModel !== modelName) {
+    console.error(
+      `[server] embedding model mismatch: DB has "${storedModel}", current env has "${modelName}". Semantic search may be degraded. Run reindex to rebuild vectors.`,
+    );
   }
 
   // Phase 2: determine embedding dimension and context length.

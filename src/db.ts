@@ -597,6 +597,14 @@ export function updateLastIndexed(): void {
  * with the correct vector dimensions.
  * Returns true if the model changed (caller should force-reindex).
  */
+export function getStoredModel(): string | null {
+  const db = getDb();
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
+    | { value: string }
+    | undefined;
+  return row?.value ?? null;
+}
+
 export function checkModelChanged(model: string): boolean {
   const db = getDb();
   const stored = db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
