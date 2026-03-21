@@ -734,14 +734,17 @@ class LRUCache<V> {
 
 const searchCache = new LRUCache<SearchResult[]>(20);
 
+// In-process counter for test isolation: incremented by bumpIndexVersion() so that
+// separate test suites sharing the same Node.js process don't get cross-suite cache hits.
+let localVersion = 0;
+
 /**
- * Increment the index version. Kept for API compatibility but is now a no-op:
- * cache invalidation is driven by getDbVersion() so that changes from any process
- * (MCP server, plugin server, CLI) are visible to all other processes.
- * @deprecated Call sites can be removed; bumpDbVersion() in db.ts handles this.
+ * Increment the local (in-process) version so that subsequent searches bypass the
+ * cache. Used by tests to avoid cross-suite cache pollution. In production code,
+ * DB-level versioning (getDbVersion) handles cross-process invalidation automatically.
  */
 export function bumpIndexVersion(): void {
-  // no-op: invalidation is handled via DB-level version counter
+  localVersion++;
 }
 
 function cacheKey(input: string, options: SearchOptions): string {
@@ -750,9 +753,11 @@ function cacheKey(input: string, options: SearchOptions): string {
   // Include reranker model so that changing RERANKER_MODEL invalidates the cache
   const rerankStr = options.rerank ? config.rerankerModel : '';
   const queriesStr = options.queries && options.queries.length > 1 ? options.queries.join('|') : '';
-  // getDbVersion() is a fast single-row read; it ensures any process that modifies
-  // the DB (upsertNote/deleteNote) invalidates the caches of all other processes.
-  return `v${getDbVersion()}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}`;
+  // Two-component version:
+  //   getDbVersion() — shared via SQLite settings; any process that modifies the DB
+  //                    bumps it, invalidating caches in all other processes.
+  //   localVersion   — in-process counter; bumpIndexVersion() for test-suite isolation.
+  return `v${getDbVersion()}_${localVersion}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}`;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- primary search entry-point; complexity is inherent in the multi-mode, multi-filter pipeline
