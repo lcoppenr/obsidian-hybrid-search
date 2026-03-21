@@ -185,7 +185,6 @@ async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
     vaultPath: config.vaultPath,
     apiBaseUrl: config.apiBaseUrl,
     apiModel: config.apiModel,
-    ignorePatternsCsv: config.ignorePatterns.join(','),
   });
 
   // Check if model changed — only wipe during reindex, not during serve/search/status.

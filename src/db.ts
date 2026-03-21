@@ -594,20 +594,12 @@ export function saveConfigMeta(meta: {
   vaultPath: string;
   apiBaseUrl: string;
   apiModel: string;
-  ignorePatternsCsv?: string;
 }): void {
   const db = getDb();
   const set = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
   set.run('vault_path', meta.vaultPath);
   set.run('api_base_url', meta.apiBaseUrl);
   set.run('api_model', meta.apiModel);
-  if (meta.ignorePatternsCsv !== undefined) {
-    const patterns = meta.ignorePatternsCsv
-      .split(',')
-      .map((p) => p.trim())
-      .filter(Boolean);
-    set.run('ignore_patterns', JSON.stringify(patterns.sort((a, b) => a.localeCompare(b))));
-  }
 }
 
 const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';

@@ -110,7 +110,6 @@ function resetDbForForceReindex(modelName: string, embeddingDim: number | null):
     vaultPath: config.vaultPath,
     apiBaseUrl: config.apiBaseUrl,
     apiModel: config.apiModel,
-    ignorePatternsCsv: config.ignorePatterns.join(','),
   });
   getDb()
     .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)")
@@ -129,7 +128,6 @@ async function main() {
     vaultPath: config.vaultPath,
     apiBaseUrl: config.apiBaseUrl,
     apiModel: config.apiModel,
-    ignorePatternsCsv: config.ignorePatterns.join(','),
   });
 
   // Warn if model differs but do NOT wipe — the MCP server is read-oriented.
