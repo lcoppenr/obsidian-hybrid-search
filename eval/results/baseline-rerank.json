@@ -1,0 +1,442 @@
+{
+  "meta": {
+    "date": "2026-03-14T19:34:11.507Z",
+    "ohs_version": "0.9.3",
+    "model": "local",
+    "rerank": true,
+    "vault": "fixtures/obsidian-help/en",
+    "note_count": 171,
+    "golden_set": "eval/golden-sets/obsidian-help.json",
+    "golden_set_size": 20,
+    "k": 10
+  },
+  "summary": {
+    "ndcg_5": 0.813,
+    "ndcg_k": 0.832,
+    "mrr": 0.879,
+    "hit_1": 0.8,
+    "hit_3": 0.95,
+    "hit_5": 1,
+    "recall_k": 1
+  },
+  "by_category": {
+    "keyword": {
+      "ndcg_5": 0.893,
+      "ndcg_k": 0.903,
+      "mrr": 1,
+      "hit_1": 1,
+      "hit_3": 1,
+      "hit_5": 1,
+      "recall_k": 1
+    },
+    "conceptual": {
+      "ndcg_5": 0.712,
+      "ndcg_k": 0.712,
+      "mrr": 0.813,
+      "hit_1": 0.75,
+      "hit_3": 0.75,
+      "hit_5": 1,
+      "recall_k": 1
+    },
+    "multilingual": {
+      "ndcg_5": 0.58,
+      "ndcg_k": 0.667,
+      "mrr": 0.611,
+      "hit_1": 0.333,
+      "hit_3": 1,
+      "hit_5": 1,
+      "recall_k": 1
+    },
+    "syntax": {
+      "ndcg_5": 0.93,
+      "ndcg_k": 0.93,
+      "mrr": 0.75,
+      "hit_1": 0.5,
+      "hit_3": 1,
+      "hit_5": 1,
+      "recall_k": 1
+    }
+  },
+  "per_query": [
+    {
+      "id": "q001",
+      "query": "how to create internal links between notes",
+      "category": "keyword",
+      "ndcg_5": 0.924,
+      "ndcg_k": 0.924,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Linking notes and files/Internal links.md",
+        "Linking notes and files/Embed files.md",
+        "Linking notes and files/Aliases.md",
+        "Getting started/Link notes.md",
+        "Import notes/Import Zettelkasten notes.md"
+      ]
+    },
+    {
+      "id": "q002",
+      "query": "frontmatter properties in notes",
+      "category": "keyword",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.76,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Properties.md",
+        "Plugins/Properties view.md",
+        "Bases/Bases syntax.md",
+        "Getting started/Glossary.md",
+        "Bases/Formulas.md"
+      ]
+    },
+    {
+      "id": "q003",
+      "query": "how to use tags to organize notes",
+      "category": "keyword",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Tags.md",
+        "Plugins/Tags view.md",
+        "Editing and formatting/Properties.md",
+        "Plugins/Daily notes.md",
+        "Obsidian Web Clipper/Filters.md"
+      ]
+    },
+    {
+      "id": "q004",
+      "query": "keyboard shortcuts and hotkeys",
+      "category": "keyword",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "User interface/Hotkeys.md",
+        "Editing and formatting/Editing shortcuts.md",
+        "Plugins/Command palette.md",
+        "Obsidian Web Clipper/Clip web pages.md",
+        "User interface/Settings.md"
+      ]
+    },
+    {
+      "id": "q005",
+      "query": "canvas infinite whiteboard plugin",
+      "category": "keyword",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Canvas.md",
+        "Contributing to Obsidian/Developers.md",
+        "Plugins/Core plugins.md",
+        "Extending Obsidian/Community plugins.md",
+        "Plugins/Web viewer.md"
+      ]
+    },
+    {
+      "id": "q006",
+      "query": "note templates reuse structure",
+      "category": "keyword",
+      "ndcg_5": 0.95,
+      "ndcg_k": 0.95,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Templates.md",
+        "Obsidian Web Clipper/Templates.md",
+        "Plugins/Daily notes.md",
+        "Editing and formatting/Properties.md",
+        "Plugins/Unique note creator.md"
+      ]
+    },
+    {
+      "id": "q007",
+      "query": "search inside vault",
+      "category": "keyword",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.76,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Search.md",
+        "Extending Obsidian/Obsidian CLI.md",
+        "Plugins/File explorer.md",
+        "Getting started/Glossary.md",
+        "Obsidian/Early access versions.md"
+      ]
+    },
+    {
+      "id": "q008",
+      "query": "callout boxes and admonitions",
+      "category": "keyword",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Callouts.md",
+        "Contributing to Obsidian/Style guide.md",
+        "Linking notes and files/Internal links.md",
+        "Editing and formatting/Basic formatting syntax.md",
+        "Obsidian Sync/Status icon and messages.md"
+      ]
+    },
+    {
+      "id": "q009",
+      "query": "backlinks to a note",
+      "category": "keyword",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.76,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Backlinks.md",
+        "Plugins/Outgoing links.md",
+        "Obsidian Publish/Permalinks.md",
+        "Getting started/Link notes.md",
+        "Linking notes and files/Aliases.md"
+      ]
+    },
+    {
+      "id": "q010",
+      "query": "daily notes journaling plugin",
+      "category": "keyword",
+      "ndcg_5": 0.907,
+      "ndcg_k": 0.907,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Daily notes.md",
+        "Plugins/Core plugins.md",
+        "Extending Obsidian/Obsidian CLI.md",
+        "Import notes/Import from Apple Notes.md",
+        "Plugins/Templates.md"
+      ]
+    },
+    {
+      "id": "q011",
+      "query": "connect notes and see how they relate",
+      "category": "conceptual",
+      "ndcg_5": 0.327,
+      "ndcg_k": 0.327,
+      "mrr": 0.25,
+      "hit_1": false,
+      "hit_3": false,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Getting started/Link notes.md",
+        "Plugins/Canvas.md",
+        "Editing and formatting/Tags.md",
+        "Plugins/Graph view.md",
+        "Obsidian Sync/Local and remote vaults.md"
+      ]
+    },
+    {
+      "id": "q012",
+      "query": "insert pre-defined snippets of text into notes",
+      "category": "keyword",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.87,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Templates.md",
+        "Extending Obsidian/CSS snippets.md",
+        "Plugins/Core plugins.md",
+        "Extending Obsidian/Obsidian CLI.md",
+        "Editing and formatting/Advanced formatting syntax.md"
+      ]
+    },
+    {
+      "id": "q013",
+      "query": "visualize knowledge graph of notes",
+      "category": "conceptual",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.76,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Graph view.md",
+        "Editing and formatting/Advanced formatting syntax.md",
+        "Linking notes and files/Internal links.md",
+        "Getting started/Link notes.md",
+        "User interface/Tabs.md"
+      ]
+    },
+    {
+      "id": "q014",
+      "query": "add keywords or topics to notes for filtering",
+      "category": "conceptual",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.76,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Tags.md",
+        "Files and folders/Manage notes.md",
+        "Editing and formatting/Properties.md",
+        "Editing and formatting/Basic formatting syntax.md",
+        "Plugins/Templates.md"
+      ]
+    },
+    {
+      "id": "q015",
+      "query": "switch between reading and editing mode",
+      "category": "conceptual",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Views and editing mode.md",
+        "Obsidian Web Clipper/Reader.md",
+        "Plugins/Quick switcher.md",
+        "Live preview update.md",
+        "User interface/Settings.md"
+      ]
+    },
+    {
+      "id": "q016",
+      "query": "как работает граф связей между заметками",
+      "category": "multilingual",
+      "ndcg_5": 0.76,
+      "ndcg_k": 0.887,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Plugins/Graph view.md",
+        "Linking notes and files/Internal links.md",
+        "Getting started/Link notes.md",
+        "Plugins/Bookmarks.md",
+        "Editing and formatting/Basic formatting syntax.md"
+      ]
+    },
+    {
+      "id": "q017",
+      "query": "теги для организации заметок в хранилище",
+      "category": "multilingual",
+      "ndcg_5": 0.48,
+      "ndcg_k": 0.615,
+      "mrr": 0.5,
+      "hit_1": false,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Obsidian/Credits.md",
+        "Editing and formatting/Tags.md",
+        "Plugins/Bookmarks.md",
+        "Editing and formatting/Properties.md",
+        "Editing and formatting/Basic formatting syntax.md"
+      ]
+    },
+    {
+      "id": "q018",
+      "query": "математические формулы в заметках",
+      "category": "multilingual",
+      "ndcg_5": 0.5,
+      "ndcg_k": 0.5,
+      "mrr": 0.333,
+      "hit_1": false,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Obsidian/Credits.md",
+        "Bases/Formulas.md",
+        "Editing and formatting/Advanced formatting syntax.md",
+        "Editing and formatting/Basic formatting syntax.md",
+        "Bases/Bases syntax.md"
+      ]
+    },
+    {
+      "id": "q019",
+      "query": "callout syntax warning info tip block",
+      "category": "syntax",
+      "ndcg_5": 1,
+      "ndcg_k": 1,
+      "mrr": 1,
+      "hit_1": true,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Editing and formatting/Callouts.md",
+        "Editing and formatting/Basic formatting syntax.md",
+        "Linking notes and files/Internal links.md",
+        "Plugins/Outgoing links.md",
+        "Contributing to Obsidian/Style guide.md"
+      ]
+    },
+    {
+      "id": "q020",
+      "query": "block reference embed section of another note",
+      "category": "syntax",
+      "ndcg_5": 0.86,
+      "ndcg_k": 0.86,
+      "mrr": 0.5,
+      "hit_1": false,
+      "hit_3": true,
+      "hit_5": true,
+      "recall_k": 1,
+      "top_paths": [
+        "Linking notes and files/Embed files.md",
+        "Linking notes and files/Internal links.md",
+        "Editing and formatting/Basic formatting syntax.md",
+        "Editing and formatting/Obsidian Flavored Markdown.md",
+        "Plugins/Outgoing links.md"
+      ]
+    }
+  ]
+}

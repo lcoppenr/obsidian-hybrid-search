@@ -19,3 +19,4 @@ opencode.json
 eval/golden-sets/personal.json
 eval/results/*.json
 !eval/results/baseline-no-rerank.json
+!eval/results/baseline-rerank.json
