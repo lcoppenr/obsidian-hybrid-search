@@ -418,14 +418,16 @@ export function startWatcher(contextLength: number): void {
       const watcher = watch(config.vaultPath, {
         ignored: (filePath: string) => {
           const base = path.basename(filePath);
-          // Allow directories
+          // statSync may throw for deleted files (unlink events) — fall through in that case.
+          // Returning true here would suppress unlink events since chokidar v4 calls
+          // ignored(path) without stats when deciding whether to emit UNLINK.
           try {
             if (statSync(filePath).isDirectory()) {
               const rel = path.relative(config.vaultPath, filePath);
               return isIgnored(rel + '/');
             }
           } catch {
-            return true;
+            // File doesn't exist — fall through to extension check below
           }
           if (!base.endsWith('.md')) return true;
           const rel = path.relative(config.vaultPath, filePath);
