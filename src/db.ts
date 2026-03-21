@@ -584,6 +584,42 @@ export function saveConfigMeta(meta: {
   }
 }
 
+const OPENAI_DEFAULT_BASE_URL = 'https://api.openai.com/v1';
+
+/**
+ * Bootstrap process.env from DB settings saved during the last reindex.
+ * Called at server startup so the plugin subprocess inherits the correct
+ * embedding endpoint (e.g. Ollama) without requiring the user to duplicate
+ * env vars in Obsidian's GUI launch environment.
+ * Env vars already set by the caller always take precedence.
+ */
+export function applyDbConfigDefaults(): void {
+  const db = getDb();
+  const get = (key: string): string | undefined =>
+    (
+      db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+        | { value: string }
+        | undefined
+    )?.value;
+
+  if (!process.env.OPENAI_BASE_URL) {
+    const storedUrl = get('api_base_url');
+    // Only apply non-default URLs (Ollama, OpenRouter, etc.).
+    // Setting OPENAI_BASE_URL to the OpenAI default without an API key
+    // would switch embedder into API mode and fail immediately.
+    if (storedUrl && storedUrl !== OPENAI_DEFAULT_BASE_URL) {
+      process.env.OPENAI_BASE_URL = storedUrl;
+    }
+  }
+
+  if (!process.env.OPENAI_EMBEDDING_MODEL) {
+    const storedModel = get('api_model');
+    if (storedModel) {
+      process.env.OPENAI_EMBEDDING_MODEL = storedModel;
+    }
+  }
+}
+
 export function updateLastIndexed(): void {
   const db = getDb();
   db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_indexed', ?)").run(

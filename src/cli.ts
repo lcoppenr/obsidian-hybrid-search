@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import pc from 'picocolors';
 import { config } from './config.js';
 import {
+  applyDbConfigDefaults,
   checkModelChanged,
   getStats,
   getStoredEmbeddingDim,
@@ -171,6 +172,7 @@ function discoverConfig(dbPathOpt?: string): void {
 
 async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
   openDb();
+  applyDbConfigDefaults();
 
   // Persist config metadata so the DB is self-describing (mirrors server.ts)
   saveConfigMeta({

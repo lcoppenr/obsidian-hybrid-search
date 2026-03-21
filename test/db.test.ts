@@ -45,6 +45,8 @@ const {
   checkModelChanged,
   getStats,
   getPathsToRemoveForIgnoreChange,
+  saveConfigMeta,
+  applyDbConfigDefaults,
 } = await import('../src/db.js');
 const { searchBm25, searchFuzzyTitle, search } = await import('../src/searcher.js');
 const { isIgnored } = await import('../src/ignore.js');
@@ -565,5 +567,75 @@ describe('event_log', () => {
     assert.ok(typeof entry.path === 'string', 'path must be string');
     assert.ok(typeof entry.timestamp === 'string', 'timestamp must be string');
     assert.ok(entry.timestamp.includes('T'), 'timestamp should be ISO 8601');
+  });
+});
+
+// ─── applyDbConfigDefaults ───────────────────────────────────────────────────
+
+describe('applyDbConfigDefaults', () => {
+  const OPENAI_DEFAULT = 'https://api.openai.com/v1';
+  const OLLAMA_URL = 'http://localhost:11434/v1';
+
+  function withCleanEnv(fn: () => void) {
+    const saved = {
+      base: process.env.OPENAI_BASE_URL,
+      model: process.env.OPENAI_EMBEDDING_MODEL,
+    };
+    delete process.env.OPENAI_BASE_URL;
+    delete process.env.OPENAI_EMBEDDING_MODEL;
+    try {
+      fn();
+    } finally {
+      if (saved.base !== undefined) process.env.OPENAI_BASE_URL = saved.base;
+      else delete process.env.OPENAI_BASE_URL;
+      if (saved.model !== undefined) process.env.OPENAI_EMBEDDING_MODEL = saved.model;
+      else delete process.env.OPENAI_EMBEDDING_MODEL;
+    }
+  }
+
+  it('sets OPENAI_BASE_URL from DB when env var is absent and stored URL is non-default', () => {
+    withCleanEnv(() => {
+      saveConfigMeta({ vaultPath: vaultDir, apiBaseUrl: OLLAMA_URL, apiModel: 'nomic-embed-text' });
+      applyDbConfigDefaults();
+      assert.equal(process.env.OPENAI_BASE_URL, OLLAMA_URL);
+    });
+  });
+
+  it('does not override OPENAI_BASE_URL when env var is already set', () => {
+    withCleanEnv(() => {
+      process.env.OPENAI_BASE_URL = 'http://other:11434/v1'; // eslint-disable-line sonarjs/no-clear-text-protocols
+      saveConfigMeta({ vaultPath: vaultDir, apiBaseUrl: OLLAMA_URL, apiModel: 'nomic-embed-text' });
+      applyDbConfigDefaults();
+      assert.equal(process.env.OPENAI_BASE_URL, 'http://other:11434/v1'); // eslint-disable-line sonarjs/no-clear-text-protocols
+    });
+  });
+
+  it('does not set OPENAI_BASE_URL when stored URL is the OpenAI default', () => {
+    withCleanEnv(() => {
+      saveConfigMeta({
+        vaultPath: vaultDir,
+        apiBaseUrl: OPENAI_DEFAULT,
+        apiModel: 'text-embedding-3-small',
+      });
+      applyDbConfigDefaults();
+      assert.equal(process.env.OPENAI_BASE_URL, undefined);
+    });
+  });
+
+  it('sets OPENAI_EMBEDDING_MODEL from DB when env var is absent', () => {
+    withCleanEnv(() => {
+      saveConfigMeta({ vaultPath: vaultDir, apiBaseUrl: OLLAMA_URL, apiModel: 'nomic-embed-text' });
+      applyDbConfigDefaults();
+      assert.equal(process.env.OPENAI_EMBEDDING_MODEL, 'nomic-embed-text');
+    });
+  });
+
+  it('does not override OPENAI_EMBEDDING_MODEL when env var is already set', () => {
+    withCleanEnv(() => {
+      process.env.OPENAI_EMBEDDING_MODEL = 'my-custom-model';
+      saveConfigMeta({ vaultPath: vaultDir, apiBaseUrl: OLLAMA_URL, apiModel: 'nomic-embed-text' });
+      applyDbConfigDefaults();
+      assert.equal(process.env.OPENAI_EMBEDDING_MODEL, 'my-custom-model');
+    });
   });
 });
