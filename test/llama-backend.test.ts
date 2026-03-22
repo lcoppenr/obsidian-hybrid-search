@@ -40,6 +40,8 @@ vi.mock('node-llama-cpp', () => ({
   resolveModelFile: mockResolveModelFile,
 }));
 
+// node-llama-cpp is dynamically imported inside llama-backend.ts (not at module
+// load time), so vi.mock above intercepts it correctly even with isolate:false.
 const { llamaEmbed, llamaRerank, _resetForTest } = await import('../src/llama-backend.js');
 
 // ─── llamaEmbed ───────────────────────────────────────────────────────────────
@@ -66,16 +68,19 @@ describe('llamaEmbed', () => {
     assert.ok(results[1] instanceof Float32Array, 'Expected Float32Array');
   });
 
-  it('passes text as-is for document type (no E5 prefix)', async () => {
+  it('prepends "passage: " prefix for document type', async () => {
     await llamaEmbed(['Obsidian is great'], 'document');
     const calledWith = mockGetEmbeddingFor.mock.calls[0]?.[0] as string;
-    assert.strictEqual(calledWith, 'Obsidian is great');
+    assert.ok(
+      calledWith.startsWith('passage: '),
+      `Expected "passage: " prefix, got: "${calledWith}"`,
+    );
   });
 
-  it('passes text as-is for query type (no E5 prefix)', async () => {
+  it('prepends "query: " prefix for query type', async () => {
     await llamaEmbed(['What is Obsidian?'], 'query');
     const calledWith = mockGetEmbeddingFor.mock.calls[0]?.[0] as string;
-    assert.strictEqual(calledWith, 'What is Obsidian?');
+    assert.ok(calledWith.startsWith('query: '), `Expected "query: " prefix, got: "${calledWith}"`);
   });
 
   it('returns null for a text when getEmbeddingFor throws', async () => {

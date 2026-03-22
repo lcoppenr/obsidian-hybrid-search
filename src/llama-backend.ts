@@ -1,5 +1,4 @@
 import type { Llama, LlamaEmbeddingContext, LlamaRankingContext } from 'node-llama-cpp';
-import { getLlama, resolveModelFile } from 'node-llama-cpp';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -45,6 +44,9 @@ async function getLlamaInstance(): Promise<Llama> {
   if (!llamaPromise) {
     llamaPromise = (async () => {
       try {
+        // Dynamic import so vi.mock('node-llama-cpp') intercepts correctly
+        // even with isolate:false in vitest config.
+        const { getLlama } = await import('node-llama-cpp');
         const l = await getLlama();
         llamaInstance = l;
         return l;
@@ -66,6 +68,7 @@ async function getEmbedContext(): Promise<LlamaEmbeddingContext> {
   if (!embedLoadPromise) {
     embedLoadPromise = (async () => {
       try {
+        const { resolveModelFile } = await import('node-llama-cpp');
         const llama = await getLlamaInstance();
         const modelPath = await resolveModelFile(EMBED_MODEL_URI, getModelsDir());
         const model = await llama.loadModel({ modelPath });
@@ -90,6 +93,7 @@ async function getRerankerContext(): Promise<LlamaRankingContext> {
   if (!rerankerLoadPromise) {
     rerankerLoadPromise = (async () => {
       try {
+        const { resolveModelFile } = await import('node-llama-cpp');
         const llama = await getLlamaInstance();
         const modelPath = await resolveModelFile(RERANKER_MODEL_URI, getModelsDir());
         const model = await llama.loadModel({ modelPath });
@@ -122,11 +126,12 @@ export function _resetForTest(): void {
 
 export async function llamaEmbed(
   texts: string[],
-  // BGE-M3 GGUF does not use E5-style "query:"/"passage:" instruction prefixes.
-  // Spike validated: no-prefix gives ~15% higher cosine similarity than with prefix.
-  // Parameter kept for API compatibility with embedder.ts interface.
-  _type: 'query' | 'document',
+  type: 'query' | 'document',
 ): Promise<(Float32Array | null)[]> {
+  // BGE-M3 uses E5-style "query:"/"passage:" prefixes for asymmetric retrieval.
+  // Spike eval: with-prefix improves nDCG@5 by ~20% vs no-prefix on the
+  // Obsidian help benchmark (0.620 vs 0.474). Keep prefixes.
+  const prefix = type === 'query' ? 'query: ' : 'passage: ';
   const ctx = await getEmbedContext();
   const results: (Float32Array | null)[] = [];
 
@@ -135,7 +140,7 @@ export async function llamaEmbed(
     const batchResults = await Promise.all(
       batch.map(async (text) => {
         try {
-          const embedding = await ctx.getEmbeddingFor(text);
+          const embedding = await ctx.getEmbeddingFor(prefix + text);
           return l2Normalize(new Float32Array(embedding.vector));
         } catch (err) {
           process.stderr.write(
