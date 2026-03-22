@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { config } from './config.js';
-import type { RerankCandidate } from './reranker.js';
+import type { RerankCandidate } from './reranker-types.js';
 
 // Spike findings (validated 2026-03-23):
 // - resolveModelFile(hfUri, dir) downloads & caches → returns local path
