@@ -14,7 +14,7 @@ import type { RerankCandidate } from './reranker-types.js';
 // - GGUF repos: gpustack org, not BAAI org
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const EMBED_MODEL_URI = 'hf:gpustack/bge-m3-GGUF/bge-m3-Q6_K.gguf';
+const EMBED_MODEL_URI = 'hf:gpustack/bge-m3-GGUF/bge-m3-Q4_K_M.gguf';
 
 // BGE-M3 via llama.cpp returns mean-pooled but un-normalized embeddings.
 // sqlite-vec uses L2 distance which is equivalent to cosine distance only when
