@@ -216,10 +216,14 @@ export function searchBm25(query: string, limit: number, snippetLength = 300): R
         bm25: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
       },
     }));
-    // Enrich BM25 snippets with heading breadcrumb from the chunks table
-    for (const result of results) {
-      const headingPath = getHeadingPathForSnippet(result.path, result.snippet);
-      if (headingPath) result.snippet = `${headingPath}\n${result.snippet}`;
+    // Enrich BM25 snippets with heading breadcrumb from the chunks table.
+    // Skip when snippetLength=0 (e.g. Obsidian plugin): the snippet would be
+    // discarded anyway and the DB lookups (2 per result) are wasted work.
+    if (snippetLength > 0) {
+      for (const result of results) {
+        const headingPath = getHeadingPathForSnippet(result.path, result.snippet);
+        if (headingPath) result.snippet = `${headingPath}\n${result.snippet}`;
+      }
     }
     return results;
   } catch {

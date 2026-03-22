@@ -582,7 +582,11 @@ program
     const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
     for await (const line of rl) {
-      await handleStdioLine(line, search, (s) => process.stdout.write(s + '\n'));
+      // Fire-and-forget: process each request concurrently so that a slow in-flight
+      // search (e.g. embedding API call) does not block reading and starting the next
+      // one.  Responses carry their own `id` field so the plugin dispatches them
+      // correctly regardless of arrival order.
+      void handleStdioLine(line, search, (s) => process.stdout.write(s + '\n'));
     }
     // stdin closed — let Node.js exit naturally to avoid native module teardown crashes
   });
