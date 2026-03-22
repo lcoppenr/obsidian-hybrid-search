@@ -732,7 +732,7 @@ class LRUCache<V> {
   }
 }
 
-const searchCache = new LRUCache<SearchResult[]>(20);
+const searchCache = new LRUCache<SearchResult[]>(100);
 
 // In-process counter for test isolation: incremented by bumpIndexVersion() so that
 // separate test suites sharing the same Node.js process don't get cross-suite cache hits.
