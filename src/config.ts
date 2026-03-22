@@ -21,9 +21,6 @@ export const config = {
   get apiModel(): string {
     return process.env.OPENAI_EMBEDDING_MODEL ?? 'text-embedding-3-small';
   },
-  get rerankerModel(): string {
-    return process.env.RERANKER_MODEL ?? 'onnx-community/bge-reranker-v2-m3-ONNX';
-  },
   get dbPath(): string {
     const v = process.env.OBSIDIAN_VAULT_PATH;
     if (!v) throw new Error('OBSIDIAN_VAULT_PATH environment variable is required');

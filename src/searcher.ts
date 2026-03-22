@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { config } from './config.js';
 import {
   getChunkEmbeddingsByPath,
   getDb,
@@ -762,8 +761,8 @@ export function bumpIndexVersion(): void {
 function cacheKey(input: string, options: SearchOptions): string {
   const scopeStr = Array.isArray(options.scope) ? options.scope.join(',') : (options.scope ?? '');
   const tagStr = Array.isArray(options.tag) ? options.tag.join(',') : (options.tag ?? '');
-  // Include reranker model so that changing RERANKER_MODEL invalidates the cache
-  const rerankStr = options.rerank ? config.rerankerModel : '';
+  // Include rerank flag in cache key (model is hardcoded in llama-backend)
+  const rerankStr = options.rerank ? 'rerank' : '';
   const queriesStr = options.queries && options.queries.length > 1 ? options.queries.join('|') : '';
   // Two-component version:
   //   getDbVersion() — shared via SQLite settings; any process that modifies the DB
