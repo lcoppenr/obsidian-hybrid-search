@@ -329,6 +329,24 @@ function printSearchTable(
   console.log(table.toString());
 }
 
+async function fetchUpdateStatus(): Promise<
+  | { state: 'up_to_date' }
+  | { state: 'update_available'; latestVersion: string }
+  | { state: 'offline' }
+> {
+  try {
+    const signal = AbortSignal.timeout(3000);
+    const res = await fetch('https://registry.npmjs.org/obsidian-hybrid-search/latest', { signal });
+    if (!res.ok) return { state: 'offline' };
+    const data = (await res.json()) as { version: string };
+    return data.version !== version
+      ? { state: 'update_available', latestVersion: data.version }
+      : { state: 'up_to_date' };
+  } catch {
+    return { state: 'offline' };
+  }
+}
+
 const program = new Command()
   .name('obsidian-hybrid-search')
   .description('Hybrid search for your Obsidian vault')
@@ -486,7 +504,7 @@ program
   .description('Show indexing status and configuration')
   .option('--recent', 'Include recent activity log')
   .action(async (opts: { recent?: boolean }) => {
-    const contextLength = await init();
+    const [contextLength, updateInfo] = await Promise.all([init(), fetchUpdateStatus()]);
     const stats = getStats();
     const indexingStatus = getIndexingStatus();
     const output: Record<string, unknown> = {
@@ -499,10 +517,19 @@ program
       last_indexed: stats.lastIndexed,
       db_size_mb:
         stats.dbSizeBytes !== null ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10 : null,
+      api_base_url: config.apiBaseUrl,
       model: stats.embeddingModel,
       embedding_dim: stats.embeddingDim,
       context_length: contextLength,
       version,
+      ...(updateInfo.state === 'update_available'
+        ? {
+            latest_version: updateInfo.latestVersion,
+            update_command: 'npm install -g obsidian-hybrid-search',
+          }
+        : updateInfo.state === 'offline'
+          ? { version_check: 'offline' }
+          : {}),
       ignore_patterns: config.ignorePatterns,
     };
     if (opts.recent) {

@@ -34,19 +34,33 @@ const _pkgPath = existsSync(resolve(_dir, '../package.json'))
   : resolve(_dir, '../../package.json');
 const { version } = JSON.parse(readFileSync(_pkgPath, 'utf-8')) as { version: string };
 
+type UpdateStatus =
+  | { state: 'checking' }
+  | { state: 'up_to_date' }
+  | { state: 'update_available'; latestVersion: string }
+  | { state: 'offline' };
+
+let updateStatus: UpdateStatus = { state: 'checking' };
+
 async function checkForUpdates(): Promise<void> {
   try {
     const signal = AbortSignal.timeout(3000);
     const res = await fetch('https://registry.npmjs.org/obsidian-hybrid-search/latest', { signal });
-    if (!res.ok) return;
+    if (!res.ok) {
+      updateStatus = { state: 'offline' };
+      return;
+    }
     const data = (await res.json()) as { version: string };
     if (data.version !== version) {
+      updateStatus = { state: 'update_available', latestVersion: data.version };
       process.stderr.write(
         `[obsidian-hybrid-search] Update available: ${version} → ${data.version}. Run: npm install -g obsidian-hybrid-search\n`,
       );
+    } else {
+      updateStatus = { state: 'up_to_date' };
     }
   } catch {
-    // network unavailable — silently ignore
+    updateStatus = { state: 'offline' };
   }
 }
 
@@ -403,10 +417,19 @@ async function main() {
             stats.dbSizeBytes !== null
               ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10
               : null,
+          api_base_url: config.apiBaseUrl,
           model: stats.embeddingModel,
           embedding_dim: stats.embeddingDim,
           context_length: contextLength,
           version,
+          ...(updateStatus.state === 'update_available'
+            ? {
+                latest_version: updateStatus.latestVersion,
+                update_command: 'npm install -g obsidian-hybrid-search',
+              }
+            : updateStatus.state === 'offline'
+              ? { version_check: 'offline' }
+              : {}),
           ignore_patterns: config.ignorePatterns,
         };
         if (a.include_activity) {
