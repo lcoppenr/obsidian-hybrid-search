@@ -102,6 +102,7 @@ const KNOWN_CONTEXT_LENGTHS: Record<string, number> = {
   // ── Ollama local models (short names) ────────────────────
   'nomic-embed-text': 8192,
   'nomic-embed-text-v1.5': 8192,
+  'nomic-embed-text-v2-moe': 512,
   'mxbai-embed-large': 512,
   'all-minilm': 512,
   'snowflake-arctic-embed': 512,
