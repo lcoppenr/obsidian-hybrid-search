@@ -106,7 +106,10 @@ const KNOWN_CONTEXT_LENGTHS: Record<string, number> = {
   'mxbai-embed-large': 512,
   'all-minilm': 512,
   'snowflake-arctic-embed': 512,
+  'snowflake-arctic-embed2': 8192,
   'paraphrase-multilingual': 512,
+  embeddinggemma: 2048,
+  'granite-embedding': 512,
 
   // ── Xenova-prefix models (compatible with @huggingface/transformers v3) ────────────────────
   'Xenova/multilingual-e5-small': 512,
