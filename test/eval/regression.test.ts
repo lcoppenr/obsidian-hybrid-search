@@ -10,6 +10,9 @@
  *
  * Measured baseline (local model, no rerank, obsidian-help vault, 58 queries):
  *   nDCG@5: 0.736  MRR: 0.771  Hit@1: 0.690  Hit@3: 0.828  Hit@5: 0.879
+ *
+ * Measured baseline (local model, with rerank, obsidian-help vault, 58 queries):
+ *   nDCG@5: 0.737  MRR: 0.767  Hit@1: 0.655  Hit@3: 0.845  Hit@5: 0.931
  */
 
 import { readFileSync } from 'node:fs';
@@ -34,15 +37,15 @@ interface EvalResult {
   summary: EvalSummary;
 }
 
-function loadLatestResult(): EvalResult {
-  const p = resolve(repoRoot, 'eval/results/baseline-no-rerank.json');
+function loadResult(filename: string): EvalResult {
+  const p = resolve(repoRoot, 'eval/results', filename);
   return JSON.parse(readFileSync(p, 'utf-8')) as EvalResult;
 }
 
-// ─── Absolute thresholds ──────────────────────────────────────────────────────
+// ─── No-rerank thresholds ─────────────────────────────────────────────────────
 // Set slightly below the measured baseline to tolerate minor float variation.
 // Only raise these — never lower them.
-const FLOOR = {
+const FLOOR_NO_RERANK = {
   ndcg_5: 0.72, // measured: 0.736
   mrr: 0.75, // measured: 0.771
   hit_1: 0.65, // measured: 0.690
@@ -50,26 +53,60 @@ const FLOOR = {
   hit_5: 0.85, // measured: 0.879
 };
 
+// ─── Rerank thresholds ────────────────────────────────────────────────────────
+// Only raise these — never lower them.
+const FLOOR_RERANK = {
+  ndcg_5: 0.72, // measured: 0.737
+  mrr: 0.74, // measured: 0.767
+  hit_1: 0.62, // measured: 0.655
+  hit_3: 0.82, // measured: 0.845
+  hit_5: 0.91, // measured: 0.931
+};
+
 describe('eval ranking quality floors (local model, no rerank)', () => {
-  const result = loadLatestResult();
+  const result = loadResult('baseline-no-rerank.json');
 
-  it(`nDCG@5 >= ${FLOOR.ndcg_5}`, () => {
-    expect(result.summary.ndcg_5).toBeGreaterThanOrEqual(FLOOR.ndcg_5);
+  it(`nDCG@5 >= ${FLOOR_NO_RERANK.ndcg_5}`, () => {
+    expect(result.summary.ndcg_5).toBeGreaterThanOrEqual(FLOOR_NO_RERANK.ndcg_5);
   });
 
-  it(`MRR >= ${FLOOR.mrr}`, () => {
-    expect(result.summary.mrr).toBeGreaterThanOrEqual(FLOOR.mrr);
+  it(`MRR >= ${FLOOR_NO_RERANK.mrr}`, () => {
+    expect(result.summary.mrr).toBeGreaterThanOrEqual(FLOOR_NO_RERANK.mrr);
   });
 
-  it(`Hit@1 >= ${FLOOR.hit_1}`, () => {
-    expect(result.summary.hit_1).toBeGreaterThanOrEqual(FLOOR.hit_1);
+  it(`Hit@1 >= ${FLOOR_NO_RERANK.hit_1}`, () => {
+    expect(result.summary.hit_1).toBeGreaterThanOrEqual(FLOOR_NO_RERANK.hit_1);
   });
 
-  it(`Hit@3 >= ${FLOOR.hit_3}`, () => {
-    expect(result.summary.hit_3).toBeGreaterThanOrEqual(FLOOR.hit_3);
+  it(`Hit@3 >= ${FLOOR_NO_RERANK.hit_3}`, () => {
+    expect(result.summary.hit_3).toBeGreaterThanOrEqual(FLOOR_NO_RERANK.hit_3);
   });
 
-  it(`Hit@5 >= ${FLOOR.hit_5}`, () => {
-    expect(result.summary.hit_5).toBeGreaterThanOrEqual(FLOOR.hit_5);
+  it(`Hit@5 >= ${FLOOR_NO_RERANK.hit_5}`, () => {
+    expect(result.summary.hit_5).toBeGreaterThanOrEqual(FLOOR_NO_RERANK.hit_5);
+  });
+});
+
+describe('eval ranking quality floors (local model, with rerank)', () => {
+  const result = loadResult('baseline-rerank.json');
+
+  it(`nDCG@5 >= ${FLOOR_RERANK.ndcg_5}`, () => {
+    expect(result.summary.ndcg_5).toBeGreaterThanOrEqual(FLOOR_RERANK.ndcg_5);
+  });
+
+  it(`MRR >= ${FLOOR_RERANK.mrr}`, () => {
+    expect(result.summary.mrr).toBeGreaterThanOrEqual(FLOOR_RERANK.mrr);
+  });
+
+  it(`Hit@1 >= ${FLOOR_RERANK.hit_1}`, () => {
+    expect(result.summary.hit_1).toBeGreaterThanOrEqual(FLOOR_RERANK.hit_1);
+  });
+
+  it(`Hit@3 >= ${FLOOR_RERANK.hit_3}`, () => {
+    expect(result.summary.hit_3).toBeGreaterThanOrEqual(FLOOR_RERANK.hit_3);
+  });
+
+  it(`Hit@5 >= ${FLOOR_RERANK.hit_5}`, () => {
+    expect(result.summary.hit_5).toBeGreaterThanOrEqual(FLOOR_RERANK.hit_5);
   });
 });
