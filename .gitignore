@@ -18,5 +18,6 @@ opencode.json
 .worktrees/
 eval/golden-sets/personal.json
 eval/results/*.json
+eval/results/*.md
 !eval/results/baseline-no-rerank.json
 !eval/results/baseline-rerank.json
