@@ -97,7 +97,11 @@ async function main(): Promise<void> {
   const queries: GoldenQuery[] = JSON.parse(fs.readFileSync(goldenSet, 'utf-8')) as GoldenQuery[];
   console.log(`[eval] loaded ${queries.length} queries`);
 
-  // 4. Init DB + index vault
+  // 4. Wipe DB to guarantee a clean index for this model, then re-index
+  const dbPath = path.join(vault, '.obsidian-hybrid-search.db');
+  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    if (fs.existsSync(f)) fs.unlinkSync(f);
+  }
   console.log('[eval] initialising database...');
   openDb();
   const [, embeddingDim] = await Promise.all([getContextLength(), getEmbeddingDim()]);
