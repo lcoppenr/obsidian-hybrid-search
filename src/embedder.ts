@@ -240,6 +240,17 @@ function useApiMode(): boolean {
   return !!(config.apiKey || process.env.OPENAI_BASE_URL);
 }
 
+// BGE and E5 model families use E5-style asymmetric prefixes ("query:"/"passage:").
+// OpenAI, Cohere, Voyage, Mistral, and Nomic models do not — adding prefixes
+// to those would corrupt their embeddings.
+function getApiPrefix(type: 'query' | 'document'): string {
+  const model = config.apiModel.toLowerCase();
+  if (/bge|\/e5|e5-/.test(model)) {
+    return type === 'query' ? 'query: ' : 'passage: ';
+  }
+  return '';
+}
+
 export async function embed(
   texts: string[],
   type: 'query' | 'document' = 'document',
@@ -252,16 +263,18 @@ export async function embed(
 
 async function embedViaApi(
   texts: string[],
-  _type: 'query' | 'document',
+  type: 'query' | 'document',
 ): Promise<(Float32Array | null)[]> {
+  const prefix = getApiPrefix(type);
+  const prefixedTexts = prefix ? texts.map((t) => prefix + t) : texts;
   const results: (Float32Array | null)[] = [];
 
   // Ollama: send one at a time to avoid the >2KB crash bug in v0.12.5+
   // and because Ollama queues internally anyway (batching gives no speedup)
   const batchSize = isOllamaEndpoint() ? 1 : config.batchSize;
 
-  for (let i = 0; i < texts.length; i += batchSize) {
-    const batch = texts.slice(i, i + batchSize);
+  for (let i = 0; i < prefixedTexts.length; i += batchSize) {
+    const batch = prefixedTexts.slice(i, i + batchSize);
     const batchResults = await embedApiBatchWithFallback(batch);
     results.push(...batchResults);
   }

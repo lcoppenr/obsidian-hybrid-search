@@ -55,6 +55,60 @@ describe('embed() — success', () => {
   });
 });
 
+describe('E5-style prefix for BGE / E5 models via API', () => {
+  const fakeEmbedding = new Array(384).fill(0.1);
+  let capturedBody: unknown;
+
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async (_url: string, opts: { body: string }) => {
+        capturedBody = JSON.parse(opts.body);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+        };
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.OPENAI_EMBEDDING_MODEL;
+  });
+
+  it('adds "passage: " prefix for BGE model document embedding', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'bge-m3';
+    await embed(['hello world'], 'document');
+    assert.equal((capturedBody as { input: string[] }).input[0], 'passage: hello world');
+  });
+
+  it('adds "query: " prefix for BGE model query embedding', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'baai/bge-m3';
+    await embed(['backlinks'], 'query');
+    assert.equal((capturedBody as { input: string[] }).input[0], 'query: backlinks');
+  });
+
+  it('adds "passage: " prefix for E5 model', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'intfloat/multilingual-e5-large';
+    await embed(['hello'], 'document');
+    assert.equal((capturedBody as { input: string[] }).input[0], 'passage: hello');
+  });
+
+  it('does NOT add prefix for OpenAI model', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+    await embed(['hello world'], 'document');
+    assert.equal((capturedBody as { input: string[] }).input[0], 'hello world');
+  });
+
+  it('does NOT add prefix for Voyage model', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'voyage-4';
+    await embed(['hello world'], 'query');
+    assert.equal((capturedBody as { input: string[] }).input[0], 'hello world');
+  });
+});
+
 describe('embed() — non-retryable failure', () => {
   afterEach(() => vi.restoreAllMocks());
 
