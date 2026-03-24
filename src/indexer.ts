@@ -409,18 +409,19 @@ export async function startBackgroundIndexing(contextLength: number): Promise<vo
   });
 }
 
-const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+interface FileDelayState {
+  timer: ReturnType<typeof setTimeout>;
+  delay: number;
+}
+
+const fileDelays = new Map<string, FileDelayState>();
 
 export function startWatcher(contextLength: number): void {
-  // Lazy import to avoid loading chokidar at startup
   import('chokidar')
     .then(({ watch }) => {
       const watcher = watch(config.vaultPath, {
         ignored: (filePath: string) => {
           const base = path.basename(filePath);
-          // statSync may throw for deleted files (unlink events) — fall through in that case.
-          // Returning true here would suppress unlink events since chokidar v4 calls
-          // ignored(path) without stats when deciding whether to emit UNLINK.
           try {
             if (statSync(filePath).isDirectory()) {
               const rel = path.relative(config.vaultPath, filePath);
@@ -437,22 +438,44 @@ export function startWatcher(contextLength: number): void {
         ignoreInitial: true,
       });
 
-      const handleChange = (filePath: string) => {
-        const existing = debounceTimers.get(filePath);
-        if (existing) clearTimeout(existing);
+      const handleAdd = (filePath: string) => {
+        const existing = fileDelays.get(filePath);
+        if (existing) clearTimeout(existing.timer);
         const timer = setTimeout(() => {
-          debounceTimers.delete(filePath);
+          fileDelays.delete(filePath);
           indexFile(filePath, contextLength).catch((err) => {
             console.warn('[watcher] error indexing', filePath, err);
           });
-        }, config.debounce);
-        debounceTimers.set(filePath, timer);
+        }, config.debounce.min);
+        fileDelays.set(filePath, { timer, delay: config.debounce.min });
       };
 
-      watcher.on('add', handleChange);
+      const handleChange = (filePath: string) => {
+        const existing = fileDelays.get(filePath);
+        const newDelay = existing
+          ? Math.min(existing.delay + config.debounce.step, config.debounce.max)
+          : config.debounce.min;
+
+        if (existing) clearTimeout(existing.timer);
+        const timer = setTimeout(() => {
+          fileDelays.delete(filePath);
+          indexFile(filePath, contextLength).catch((err) => {
+            console.warn('[watcher] error indexing', filePath, err);
+          });
+        }, newDelay);
+        fileDelays.set(filePath, { timer, delay: newDelay });
+      };
+
+      watcher.on('add', handleAdd);
       watcher.on('change', handleChange);
       watcher.on('unlink', (filePath: string) => {
         const rel = path.relative(config.vaultPath, filePath).normalize('NFD');
+        // Cancel any pending timer for this file
+        const existing = fileDelays.get(filePath);
+        if (existing) {
+          clearTimeout(existing.timer);
+          fileDelays.delete(filePath);
+        }
         deleteNote(rel);
         bumpIndexVersion();
       });
