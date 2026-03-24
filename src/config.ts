@@ -38,5 +38,5 @@ export const config = {
   chunkMinLength: 50,
   chunkHeadingLevel: 0,
   batchSize: 10,
-  debounce: 2_000,
+  debounce: 10_000,
 };
