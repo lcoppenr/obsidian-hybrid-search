@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { config } from './config.js';
 import {
+  filterNotePathsByTag,
   getBacklinksForPaths,
   getChunkEmbeddingsByPath,
   getDb,
@@ -110,21 +111,12 @@ function applyThreshold(results: RawResult[], threshold: number): RawResult[] {
   return results.filter((r) => r.score >= threshold);
 }
 
-function matchesTagFilter(tags: string[], tag: string | string[]): boolean {
-  const filters = Array.isArray(tag) ? tag : [tag];
-  const includes = filters.filter((t) => !t.startsWith('-')).map((t) => t.toLowerCase());
-  const excludes = filters.filter((t) => t.startsWith('-')).map((t) => t.slice(1).toLowerCase());
-  const lowerTags = tags.map((t) => t.toLowerCase());
-  if (excludes.some((ex) => lowerTags.some((t) => t === ex || t.includes(ex)))) return false;
-  if (includes.length === 0) return true;
-  return includes.some((inc) => lowerTags.some((t) => t === inc || t.includes(inc)));
-}
-
 function applyTagFilter(results: RawResult[], tag: string | string[]): RawResult[] {
-  return results.filter((r) => {
-    const tags = getParsedTags(r);
-    return matchesTagFilter(tags, tag);
-  });
+  const allowedPaths = filterNotePathsByTag(
+    results.map((result) => result.path),
+    tag,
+  );
+  return results.filter((result) => allowedPaths.has(result.path));
 }
 
 function toSearchResult(r: RawResult): SearchResult {
@@ -918,7 +910,11 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     // Apply scope and tag filters (related bypasses the normal pipeline)
     if (options.scope) related = related.filter((r) => matchesScopeFilter(r.path, options.scope!));
     if (options.tag && (!Array.isArray(options.tag) || options.tag.length > 0)) {
-      related = related.filter((r) => matchesTagFilter(r.tags, options.tag!));
+      const allowedPaths = filterNotePathsByTag(
+        related.map((result) => result.path),
+        options.tag,
+      );
+      related = related.filter((result) => allowedPaths.has(result.path));
     }
     const fallbackSnippets = getSnippetFallbacks(
       related.filter((r) => !r.snippet || r.snippet.length < snippetLength).map((r) => r.path),

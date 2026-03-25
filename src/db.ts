@@ -12,7 +12,22 @@ function normalizeAlias(alias: string): string {
   return alias.normalize('NFD').toLowerCase();
 }
 
+function normalizeTag(tag: string): string {
+  return tag.normalize('NFD').toLowerCase();
+}
+
 function parseAliasesJson(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    return (JSON.parse(raw) as unknown[]).filter(
+      (value): value is string => typeof value === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function parseTagsJson(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {
     return (JSON.parse(raw) as unknown[]).filter(
@@ -58,6 +73,38 @@ function rebuildAliasLookup(db: DB): void {
 
   for (const note of notes) {
     replaceNoteAliases(db, note.id, parseAliasesJson(note.aliases));
+  }
+}
+
+function replaceNoteTags(db: DB, noteId: number, tags: readonly string[] | null | undefined): void {
+  db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(noteId);
+  if (!tags || tags.length === 0) return;
+
+  const seen = new Set<string>();
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO note_tags (note_id, tag, tag_norm) VALUES (?, ?, ?)',
+  );
+
+  for (const tag of tags) {
+    if (typeof tag !== 'string') continue;
+    const normalized = normalizeTag(tag);
+    const dedupeKey = `${tag}\u0000${normalized}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    insert.run(noteId, tag, normalized);
+  }
+}
+
+function rebuildTagLookup(db: DB): void {
+  db.prepare('DELETE FROM note_tags').run();
+
+  const notes = db.prepare('SELECT id, tags FROM notes WHERE tags IS NOT NULL').all() as Array<{
+    id: number;
+    tags: string;
+  }>;
+
+  for (const note of notes) {
+    replaceNoteTags(db, note.id, parseTagsJson(note.tags));
   }
 }
 
@@ -135,6 +182,15 @@ function runMigrations(db: DB): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_note_aliases_alias_norm ON note_aliases(alias_norm);
+
+    CREATE TABLE IF NOT EXISTS note_tags (
+      note_id  INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      tag      TEXT NOT NULL,
+      tag_norm TEXT NOT NULL,
+      PRIMARY KEY (note_id, tag)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_note_tags_tag_norm ON note_tags(tag_norm);
   `);
 
   const aliasLookupVersion = (
@@ -148,6 +204,22 @@ function runMigrations(db: DB): void {
       rebuildAliasLookup(db);
       db.prepare(
         "INSERT OR REPLACE INTO settings(key, value) VALUES('alias_lookup_version', '1')",
+      ).run();
+    });
+    tx();
+  }
+
+  const tagLookupVersion = (
+    db.prepare("SELECT value FROM settings WHERE key = 'tag_lookup_version'").get() as
+      | { value: string }
+      | undefined
+  )?.value;
+
+  if (tagLookupVersion !== '1') {
+    const tx = db.transaction(() => {
+      rebuildTagLookup(db);
+      db.prepare(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES('tag_lookup_version', '1')",
       ).run();
     });
     tx();
@@ -449,6 +521,7 @@ export function upsertNote(note: {
 
     const noteId = existing.id;
     replaceNoteAliases(db, noteId, aliases);
+    replaceNoteTags(db, noteId, note.tags);
     insertChunks(db, noteId, note.chunks);
     logEvent('updated', note.path);
     bumpDbVersion();
@@ -473,6 +546,7 @@ export function upsertNote(note: {
 
     const noteId = result.lastInsertRowid as number;
     replaceNoteAliases(db, noteId, aliases);
+    replaceNoteTags(db, noteId, note.tags);
     insertChunks(db, noteId, note.chunks);
     logEvent('added', note.path);
     bumpDbVersion();
@@ -604,6 +678,65 @@ export function getLinksForPaths(paths: string[]): {
     links: getOutgoingLinksForPaths(paths),
     backlinks: getBacklinksForPaths(paths),
   };
+}
+
+export function filterNotePathsByTag(paths: string[], tag: string | string[]): Set<string> {
+  if (paths.length === 0) return new Set();
+
+  const db = getDb();
+  const filters = Array.isArray(tag) ? tag : [tag];
+  const includes = filters.filter((t) => !t.startsWith('-')).map(normalizeTag);
+  const excludes = filters.filter((t) => t.startsWith('-')).map((t) => normalizeTag(t.slice(1)));
+  const pathPlaceholders = paths.map(() => '?').join(', ');
+
+  const buildTagPredicate = (values: string[]): { sql: string; params: string[] } => {
+    const parts: string[] = [];
+    const params: string[] = [];
+    for (const value of values) {
+      parts.push('(nt.tag_norm = ? OR nt.tag_norm LIKE ?)');
+      params.push(value, `%${value}%`);
+    }
+    return {
+      sql: parts.length > 0 ? parts.join(' OR ') : '0',
+      params,
+    };
+  };
+
+  const excludePredicate = buildTagPredicate(excludes);
+  const includePredicate = buildTagPredicate(includes);
+
+  const includeClause =
+    includes.length === 0
+      ? '1'
+      : `EXISTS (
+           SELECT 1
+           FROM note_tags nt
+           WHERE nt.note_id = n.id
+             AND (${includePredicate.sql})
+         )`;
+  const excludeClause =
+    excludes.length === 0
+      ? '1'
+      : `NOT EXISTS (
+           SELECT 1
+           FROM note_tags nt
+           WHERE nt.note_id = n.id
+             AND (${excludePredicate.sql})
+         )`;
+
+  const rows = db
+    .prepare(
+      `SELECT n.path
+       FROM notes n
+       WHERE n.path IN (${pathPlaceholders})
+         AND ${excludeClause}
+         AND ${includeClause}`,
+    )
+    .all(...paths, ...excludePredicate.params, ...includePredicate.params) as Array<{
+    path: string;
+  }>;
+
+  return new Set(rows.map((row) => row.path));
 }
 
 interface EventLogEntry {

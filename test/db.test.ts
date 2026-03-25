@@ -48,6 +48,7 @@ const {
   getPathsToRemoveForIgnoreChange,
   saveConfigMeta,
   applyDbConfigDefaults,
+  filterNotePathsByTag,
 } = await import('../src/db.js');
 const { searchBm25, searchFuzzyTitle, search } = await import('../src/searcher.js');
 const { isIgnored } = await import('../src/ignore.js');
@@ -246,6 +247,88 @@ describe('search LRU cache', () => {
     const r1 = await search('zettelkasten', { mode: 'fulltext', limit: 5 });
     const r2 = await search('python programming', { mode: 'fulltext', limit: 5 });
     assert.notStrictEqual(r1, r2, 'different query should not return cached result');
+  });
+});
+
+describe('note tag lookup', () => {
+  it('stores normalized tags in note_tags for each upserted note', () => {
+    const db = getDb();
+    const rows = db
+      .prepare(
+        `SELECT nt.tag, nt.tag_norm
+         FROM note_tags nt
+         JOIN notes n ON n.id = nt.note_id
+         WHERE n.path = ?
+         ORDER BY nt.tag_norm`,
+      )
+      .all('pkm-tag-test.md') as Array<{ tag: string; tag_norm: string }>;
+
+    if (rows.length === 0) {
+      upsertNote({
+        path: 'pkm-tag-test.md',
+        title: 'PKM Tag Test',
+        tags: ['PKM', 'Method/Subtag'],
+        content: 'tag storage test',
+        mtime: Date.now(),
+        hash: 'pkm-tag-test',
+        chunks: [{ text: 'tag storage test', embedding: fakeEmbedding }],
+      });
+    }
+
+    const storedRows = db
+      .prepare(
+        `SELECT nt.tag, nt.tag_norm
+         FROM note_tags nt
+         JOIN notes n ON n.id = nt.note_id
+         WHERE n.path = ?
+         ORDER BY nt.tag_norm`,
+      )
+      .all('pkm-tag-test.md') as Array<{ tag: string; tag_norm: string }>;
+
+    assert.deepEqual(
+      storedRows,
+      [
+        { tag: 'Method/Subtag', tag_norm: 'method/subtag' },
+        { tag: 'PKM', tag_norm: 'pkm' },
+      ],
+      'note_tags should store raw and normalized tags',
+    );
+  });
+
+  it('filters candidate note paths by include and exclude tag rules', () => {
+    upsertNote({
+      path: 'tag-sql-inc.md',
+      title: 'Tag SQL Include',
+      tags: ['include-me', 'shared'],
+      content: 'include',
+      mtime: Date.now(),
+      hash: 'tag-sql-inc',
+      chunks: [{ text: 'include', embedding: fakeEmbedding }],
+    });
+    upsertNote({
+      path: 'tag-sql-exc.md',
+      title: 'Tag SQL Exclude',
+      tags: ['exclude-me', 'shared'],
+      content: 'exclude',
+      mtime: Date.now(),
+      hash: 'tag-sql-exc',
+      chunks: [{ text: 'exclude', embedding: fakeEmbedding }],
+    });
+
+    const includeOnly = filterNotePathsByTag(['tag-sql-inc.md', 'tag-sql-exc.md'], 'include-me');
+    assert.deepEqual(
+      [...includeOnly].sort((a, b) => a.localeCompare(b)),
+      ['tag-sql-inc.md'],
+    );
+
+    const sharedWithoutExclude = filterNotePathsByTag(
+      ['tag-sql-inc.md', 'tag-sql-exc.md'],
+      ['shared', '-exclude-me'],
+    );
+    assert.deepEqual(
+      [...sharedWithoutExclude].sort((a, b) => a.localeCompare(b)),
+      ['tag-sql-inc.md'],
+    );
   });
 });
 
