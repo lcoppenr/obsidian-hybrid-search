@@ -286,26 +286,30 @@ function searchByAliasExact(query: string, limit: number): RawResult[] {
 
   const rows = db
     .prepare(
-      "SELECT path, title, tags, aliases FROM notes WHERE aliases IS NOT NULL AND aliases != '[]'",
+      `
+      SELECT DISTINCT n.path, n.title, n.tags, n.aliases
+      FROM note_aliases a
+      JOIN notes n ON n.id = a.note_id
+      WHERE a.alias_norm = ?
+      LIMIT ?
+    `,
     )
-    .all() as Array<{ path: string; title: string; tags: string; aliases: string }>;
+    .all(queryNfd, limit) as Array<{
+    path: string;
+    title: string;
+    tags: string;
+    aliases: string | null;
+  }>;
 
-  const matches: RawResult[] = [];
-  for (const row of rows) {
-    if (matches.length >= limit) break;
-    if (parseAliases(row.aliases).some((a) => a.normalize('NFD').toLowerCase() === queryNfd)) {
-      matches.push({
-        path: row.path,
-        title: row.title ?? '',
-        tags: row.tags ?? '[]',
-        aliases: row.aliases,
-        snippet: '',
-        score: 1.0,
-        scores: { fuzzy_title: 1.0 },
-      });
-    }
-  }
-  return matches;
+  return rows.map((row) => ({
+    path: row.path,
+    title: row.title ?? '',
+    tags: row.tags ?? '[]',
+    aliases: row.aliases,
+    snippet: '',
+    score: 1.0,
+    scores: { fuzzy_title: 1.0 },
+  }));
 }
 
 export function searchFuzzyTitle(query: string, limit: number): RawResult[] {

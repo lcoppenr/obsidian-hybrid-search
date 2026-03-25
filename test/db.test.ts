@@ -597,6 +597,50 @@ describe('aliases', () => {
     const aliases = JSON.parse((note as any).aliases ?? '[]') as string[];
     assert.deepEqual(aliases, ['Short Name', 'Alt Title']);
   });
+
+  it('maintains normalized alias lookup rows for exact search', () => {
+    upsertNote({
+      path: 'alias-lookup.md',
+      title: 'Alias Lookup',
+      tags: [],
+      aliases: ['ЗК', 'Alt Name'],
+      content: 'lookup test',
+      mtime: Date.now(),
+      hash: 'alias-lookup-v1',
+      chunks: [{ text: 'lookup test', embedding: fakeEmbedding }],
+    });
+
+    let rows = getDb()
+      .prepare(
+        'SELECT alias, alias_norm FROM note_aliases WHERE note_id = (SELECT id FROM notes WHERE path = ?)',
+      )
+      .all('alias-lookup.md') as Array<{ alias: string; alias_norm: string }>;
+    rows = rows.sort((a, b) => a.alias.localeCompare(b.alias));
+
+    assert.deepEqual(rows, [
+      { alias: 'Alt Name', alias_norm: 'alt name' },
+      { alias: 'ЗК', alias_norm: 'зк' },
+    ]);
+
+    upsertNote({
+      path: 'alias-lookup.md',
+      title: 'Alias Lookup',
+      tags: [],
+      aliases: ['Updated Alias'],
+      content: 'lookup test updated',
+      mtime: Date.now(),
+      hash: 'alias-lookup-v2',
+      chunks: [{ text: 'lookup test updated', embedding: fakeEmbedding }],
+    });
+
+    const updatedRows = getDb()
+      .prepare(
+        'SELECT alias, alias_norm FROM note_aliases WHERE note_id = (SELECT id FROM notes WHERE path = ?)',
+      )
+      .all('alias-lookup.md') as Array<{ alias: string; alias_norm: string }>;
+
+    assert.deepEqual(updatedRows, [{ alias: 'Updated Alias', alias_norm: 'updated alias' }]);
+  });
 });
 
 // ─── indexFile error handling ─────────────────────────────────────────────────

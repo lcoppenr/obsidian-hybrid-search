@@ -8,6 +8,59 @@ type DB = InstanceType<typeof Database>;
 
 let _db: DB | null = null;
 
+function normalizeAlias(alias: string): string {
+  return alias.normalize('NFD').toLowerCase();
+}
+
+function parseAliasesJson(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    return (JSON.parse(raw) as unknown[]).filter(
+      (value): value is string => typeof value === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
+function replaceNoteAliases(
+  db: DB,
+  noteId: number,
+  aliases: readonly string[] | null | undefined,
+): void {
+  db.prepare('DELETE FROM note_aliases WHERE note_id = ?').run(noteId);
+  if (!aliases || aliases.length === 0) return;
+
+  const seen = new Set<string>();
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO note_aliases (note_id, alias, alias_norm) VALUES (?, ?, ?)',
+  );
+
+  for (const alias of aliases) {
+    if (typeof alias !== 'string') continue;
+    const normalized = normalizeAlias(alias);
+    const dedupeKey = `${alias}\u0000${normalized}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    insert.run(noteId, alias, normalized);
+  }
+}
+
+function rebuildAliasLookup(db: DB): void {
+  db.prepare('DELETE FROM note_aliases').run();
+
+  const notes = db
+    .prepare('SELECT id, aliases FROM notes WHERE aliases IS NOT NULL')
+    .all() as Array<{
+    id: number;
+    aliases: string;
+  }>;
+
+  for (const note of notes) {
+    replaceNoteAliases(db, note.id, parseAliasesJson(note.aliases));
+  }
+}
+
 function runMigrations(db: DB): void {
   // Base schema — no FTS tables here; they are managed by the versioned migration below
   db.exec(`
@@ -71,6 +124,33 @@ function runMigrations(db: DB): void {
   const chunkCols = db.prepare('PRAGMA table_info(chunks)').all() as { name: string }[];
   if (!chunkCols.some((c) => c.name === 'embedding_status')) {
     db.exec("ALTER TABLE chunks ADD COLUMN embedding_status TEXT NOT NULL DEFAULT 'ok'");
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS note_aliases (
+      note_id    INTEGER NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+      alias      TEXT NOT NULL,
+      alias_norm TEXT NOT NULL,
+      PRIMARY KEY (note_id, alias)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_note_aliases_alias_norm ON note_aliases(alias_norm);
+  `);
+
+  const aliasLookupVersion = (
+    db.prepare("SELECT value FROM settings WHERE key = 'alias_lookup_version'").get() as
+      | { value: string }
+      | undefined
+  )?.value;
+
+  if (aliasLookupVersion !== '1') {
+    const tx = db.transaction(() => {
+      rebuildAliasLookup(db);
+      db.prepare(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES('alias_lookup_version', '1')",
+      ).run();
+    });
+    tx();
   }
 
   // FTS schema v3: unicode61 tokenchars '+#' so C++/C# are full tokens.
@@ -338,7 +418,8 @@ export function upsertNote(note: {
   chunks: { text: string; headingPath?: string | null; embedding: Float32Array | null }[];
 }): void {
   const db = getDb();
-  const aliasesJson = note.aliases && note.aliases.length > 0 ? JSON.stringify(note.aliases) : null;
+  const aliases = note.aliases?.filter((alias): alias is string => typeof alias === 'string') ?? [];
+  const aliasesJson = aliases.length > 0 ? JSON.stringify(aliases) : null;
 
   const existing = db.prepare('SELECT id FROM notes WHERE path = ?').get(note.path) as
     | { id: number }
@@ -367,6 +448,7 @@ export function upsertNote(note: {
     db.prepare('DELETE FROM chunks WHERE note_id = ?').run(existing.id);
 
     const noteId = existing.id;
+    replaceNoteAliases(db, noteId, aliases);
     insertChunks(db, noteId, note.chunks);
     logEvent('updated', note.path);
     bumpDbVersion();
@@ -390,6 +472,7 @@ export function upsertNote(note: {
       );
 
     const noteId = result.lastInsertRowid as number;
+    replaceNoteAliases(db, noteId, aliases);
     insertChunks(db, noteId, note.chunks);
     logEvent('added', note.path);
     bumpDbVersion();
