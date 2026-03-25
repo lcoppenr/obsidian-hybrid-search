@@ -148,6 +148,7 @@ export async function indexFile(
  * that were indexed before the links feature was added. No API calls — just
  * wikilink parsing and DB writes.
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function populateMissingLinks(): Promise<void> {
   const db = getDb();
   const done = (
@@ -177,6 +178,7 @@ export async function populateMissingLinks(): Promise<void> {
  * Called after every full vault reindex so that notes whose targets
  * didn't exist at index time get their links backfilled.
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 async function resolveAllLinks(): Promise<void> {
   const db = getDb();
   const notes = db
@@ -397,6 +399,7 @@ async function processQueue(contextLength: number): Promise<void> {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function startBackgroundIndexing(contextLength: number): Promise<void> {
   const files = scanVault();
   const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));

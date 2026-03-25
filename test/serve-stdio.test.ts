@@ -114,6 +114,7 @@ describe('handleStdioLine — protocol', () => {
   });
 
   it('search error returns error response without throwing', async () => {
+    // eslint-disable-next-line @typescript-eslint/require-await
     const failSearch: SearchFunction = async () => {
       throw new Error('embedding service unavailable');
     };
@@ -127,6 +128,7 @@ describe('handleStdioLine — protocol', () => {
   it('search options are passed through to the search function', async () => {
     let capturedQuery = '';
     let capturedOpts: Parameters<SearchFunction>[1] = {};
+    // eslint-disable-next-line @typescript-eslint/require-await
     const captureFn: SearchFunction = async (query, opts) => {
       capturedQuery = query;
       capturedOpts = opts ?? {};

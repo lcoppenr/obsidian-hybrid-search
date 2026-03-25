@@ -455,6 +455,7 @@ function getHeadingPathForSnippet(notePath: string, snippetText: string): string
   return chain.length > 0 ? chain.join(' > ') : null;
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
 async function searchVector(queryEmbedding: Float32Array, limit: number): Promise<RawResult[]> {
   if (!hasVecTable()) return [];
 

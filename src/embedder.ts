@@ -8,6 +8,7 @@ function getCacheDir(): string {
   return path.join(os.homedir(), '.cache', 'huggingface');
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Hugging Face transformers pipeline has no types
 let localPipeline: any = null;
 let cachedContextLength: number | null = null;
 let cachedDim: number | null = null;

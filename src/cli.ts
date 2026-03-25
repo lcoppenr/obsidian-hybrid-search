@@ -356,6 +356,7 @@ const program = new Command()
     'Path to .obsidian-hybrid-search.db (auto-discovered from CWD by default)',
   );
 
+// eslint-disable-next-line @typescript-eslint/require-await
 program.hook('preAction', async (thisCommand) => {
   const opts = thisCommand.opts();
   discoverConfig(opts.db as string | undefined);

@@ -194,6 +194,7 @@ async function main() {
     { capabilities: { tools: {} } },
   );
 
+  // eslint-disable-next-line @typescript-eslint/require-await
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {

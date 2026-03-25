@@ -1,5 +1,5 @@
 {
-  "entry": ["src/cli.ts", "src/server.ts", "eval/evaluate.ts", "eval/compare.ts"],
+  "entry": ["src/**/*.ts", "eval/**/*.ts"],
   "project": ["src/**/*.ts", "eval/**/*.ts"],
   "ignoreIssues": {
     "src/searcher.ts": ["types"]

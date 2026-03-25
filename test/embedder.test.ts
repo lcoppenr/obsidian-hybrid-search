@@ -33,7 +33,7 @@ describe('embed() — success', () => {
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: async () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+        json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
       }),
     );
   });
@@ -62,12 +62,12 @@ describe('E5-style prefix for BGE / E5 models via API', () => {
   beforeEach(() => {
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async (_url: string, opts: { body: string }) => {
+      vi.fn().mockImplementation((_url: string, opts: { body: string }) => {
         capturedBody = JSON.parse(opts.body);
         return {
           ok: true,
           status: 200,
-          json: async () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+          json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
         };
       }),
     );
@@ -118,7 +118,7 @@ describe('embed() — non-retryable failure', () => {
       vi.fn().mockResolvedValue({
         ok: false,
         status: 400,
-        text: async () => 'bad request',
+        text: () => 'bad request',
       }),
     );
 
@@ -136,15 +136,15 @@ describe('embed() — retryable failure (429)', () => {
     let callCount = 0;
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async () => {
+      vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount < 2) {
-          return { ok: false, status: 429, text: async () => 'rate limited' };
+          return { ok: false, status: 429, text: () => 'rate limited' };
         }
         return {
           ok: true,
           status: 200,
-          json: async () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+          json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
         };
       }),
     );
@@ -165,7 +165,7 @@ describe('embed() — retryable failure (429)', () => {
       vi.fn().mockResolvedValue({
         ok: false,
         status: 429,
-        text: async () => 'rate limited',
+        text: () => 'rate limited',
       }),
     );
 

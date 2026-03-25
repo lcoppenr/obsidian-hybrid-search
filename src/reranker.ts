@@ -99,9 +99,9 @@ export class CrossEncoderReranker {
     // Redirect cache to ~/.cache/huggingface so models survive npm install / node_modules wipes.
     env.cacheDir = path.join(os.homedir(), '.cache', 'huggingface');
     const [tokenizer, model] = await Promise.all([
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- no types
       (AutoTokenizer as any).from_pretrained(this.modelName) as Promise<unknown>,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- no types
       (AutoModelForSequenceClassification as any).from_pretrained(this.modelName, {
         // dtype:'int8' loads model_int8.onnx (~32MB vs ~571MB fp32/fp16).
         // device:'cpu' is required — CoreML/CUDA (device:'auto') do not support
@@ -118,7 +118,7 @@ export class CrossEncoderReranker {
     return async (inputs: Array<{ text: string; text_pair: string }>) => {
       const queries = inputs.map((c) => c.text);
       const docs = inputs.map((c) => c.text_pair);
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any -- no types
       const encoded = (tokenizer as any)(queries, {
         text_pair: docs,
         padding: true,
@@ -128,7 +128,7 @@ export class CrossEncoderReranker {
         // so almost nothing is truncated in practice.
         max_length: 128,
       }) as unknown;
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-explicit-any -- no types
       const { logits } = (await (model as any)(encoded)) as {
         logits: { data: Float32Array; dims: number[] };
       };
