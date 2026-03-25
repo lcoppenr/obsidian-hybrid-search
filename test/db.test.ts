@@ -41,6 +41,7 @@ const {
   upsertLinks,
   getLinksForPaths,
   getNoteByPath,
+  getDb,
   deleteNote,
   checkModelChanged,
   getStats,
@@ -126,6 +127,97 @@ describe('upsertNote frontmatter storage', () => {
     const note = getNoteByPath('zettelkasten-deep.md');
     assert.ok(note, 'note should be found');
     assert.equal(note.frontmatter, '');
+  });
+});
+
+describe('vec_chunks cleanup', () => {
+  it('upsertNote removes stale vectors from previous chunks', () => {
+    upsertNote({
+      path: 'vec-upsert.md',
+      title: 'Vec Upsert',
+      tags: [],
+      content: 'first version content',
+      mtime: Date.now(),
+      hash: 'vec-upsert-1',
+      chunks: [
+        { text: 'first chunk', embedding: fakeEmbedding },
+        { text: 'second chunk', embedding: fakeEmbedding },
+      ],
+    });
+
+    upsertNote({
+      path: 'vec-upsert.md',
+      title: 'Vec Upsert',
+      tags: [],
+      content: 'second version content',
+      mtime: Date.now(),
+      hash: 'vec-upsert-2',
+      chunks: [{ text: 'replacement chunk', embedding: fakeEmbedding }],
+    });
+
+    const db = getDb();
+    const counts = db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM chunks WHERE note_id = n.id) AS chunk_count,
+           (SELECT COUNT(*)
+            FROM vec_chunks vc
+            JOIN chunks c ON c.id = vc.chunk_id
+            WHERE c.note_id = n.id) AS vec_count
+         FROM notes n
+         WHERE n.path = ?`,
+      )
+      .get('vec-upsert.md') as { chunk_count: number; vec_count: number } | undefined;
+
+    assert.ok(counts, 'note should exist after upsert');
+    assert.equal(counts.chunk_count, 1, 'old chunks should be removed on re-upsert');
+    assert.equal(counts.vec_count, 1, 'old vectors should be removed on re-upsert');
+  });
+
+  it('deleteNote removes vectors for deleted note only', () => {
+    upsertNote({
+      path: 'vec-delete-a.md',
+      title: 'Vec Delete A',
+      tags: [],
+      content: 'note a',
+      mtime: Date.now(),
+      hash: 'vec-delete-a',
+      chunks: [{ text: 'chunk a', embedding: fakeEmbedding }],
+    });
+    upsertNote({
+      path: 'vec-delete-b.md',
+      title: 'Vec Delete B',
+      tags: [],
+      content: 'note b',
+      mtime: Date.now(),
+      hash: 'vec-delete-b',
+      chunks: [{ text: 'chunk b', embedding: fakeEmbedding }],
+    });
+
+    deleteNote('vec-delete-a.md');
+
+    const db = getDb();
+    const deletedCount = db
+      .prepare(
+        `SELECT COUNT(*)
+         FROM vec_chunks vc
+         JOIN chunks c ON c.id = vc.chunk_id
+         JOIN notes n ON n.id = c.note_id
+         WHERE n.path = ?`,
+      )
+      .get('vec-delete-a.md') as { 'COUNT(*)': number };
+    const keptCount = db
+      .prepare(
+        `SELECT COUNT(*)
+         FROM vec_chunks vc
+         JOIN chunks c ON c.id = vc.chunk_id
+         JOIN notes n ON n.id = c.note_id
+         WHERE n.path = ?`,
+      )
+      .get('vec-delete-b.md') as { 'COUNT(*)': number };
+
+    assert.equal(deletedCount['COUNT(*)'], 0, 'deleted note should have no remaining vectors');
+    assert.equal(keptCount['COUNT(*)'], 1, 'other notes should keep their vectors');
   });
 });
 

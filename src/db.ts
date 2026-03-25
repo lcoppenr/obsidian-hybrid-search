@@ -141,6 +141,12 @@ function logEvent(action: 'added' | 'updated' | 'deleted', notePath: string): vo
   ).run();
 }
 
+function deleteVecChunksForNote(db: DB, noteId: number): void {
+  db.prepare(
+    'DELETE FROM vec_chunks WHERE chunk_id IN (SELECT id FROM chunks WHERE note_id = ?)',
+  ).run(noteId);
+}
+
 function cleanupNfcPaths(db: DB): void {
   const vecExists = !!db
     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'")
@@ -149,12 +155,7 @@ function cleanupNfcPaths(db: DB): void {
   for (const note of nfcNotes) {
     if (note.path !== note.path.normalize('NFD')) {
       if (vecExists) {
-        const chunkIds = db.prepare('SELECT id FROM chunks WHERE note_id = ?').all(note.id) as {
-          id: number;
-        }[];
-        for (const { id } of chunkIds) {
-          db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(id);
-        }
+        deleteVecChunksForNote(db, note.id);
       }
       db.prepare('DELETE FROM links WHERE from_path = ?').run(note.path);
       db.prepare('DELETE FROM notes WHERE id = ?').run(note.id);
@@ -338,12 +339,7 @@ export function upsertNote(note: {
 
   if (existing) {
     // Delete existing chunk vectors before cascade-deleting chunks
-    const chunkIds = db.prepare('SELECT id FROM chunks WHERE note_id = ?').all(existing.id) as {
-      id: number;
-    }[];
-    for (const { id } of chunkIds) {
-      db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(id);
-    }
+    deleteVecChunksForNote(db, existing.id);
 
     db.prepare(
       `
@@ -427,12 +423,7 @@ export function deleteNote(notePath: string, keepLinks = false): void {
     | undefined;
   if (!note) return;
 
-  const chunkIds = db.prepare('SELECT id FROM chunks WHERE note_id = ?').all(note.id) as {
-    id: number;
-  }[];
-  for (const { id } of chunkIds) {
-    db.prepare('DELETE FROM vec_chunks WHERE chunk_id = ?').run(id);
-  }
+  deleteVecChunksForNote(db, note.id);
   db.prepare('DELETE FROM chunks WHERE note_id = ?').run(note.id);
 
   if (!keepLinks) {
