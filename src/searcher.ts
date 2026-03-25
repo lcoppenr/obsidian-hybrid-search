@@ -569,13 +569,19 @@ function rrfFusion(lists: RawResult[][], k = 60, weights?: number[]): RawResult[
 // ─── Graph traversal ─────────────────────────────────────
 
 /** Get the first maxChars characters of a note's content as a fallback snippet. */
-function getSnippetFallback(notePath: string, maxChars: number): string {
+function getSnippetFallbacks(notePaths: string[], maxChars: number): Map<string, string> {
+  if (notePaths.length === 0 || maxChars <= 0) return new Map();
+
   const db = getDb();
-  const note = db.prepare('SELECT content FROM notes WHERE path = ?').get(notePath) as
-    | { content: string }
-    | undefined;
-  if (!note?.content) return '';
-  return note.content.slice(0, maxChars).trim();
+  const uniquePaths = Array.from(new Set(notePaths));
+  const placeholders = uniquePaths.map(() => '?').join(', ');
+  const rows = db
+    .prepare(`SELECT path, content FROM notes WHERE path IN (${placeholders})`)
+    .all(...uniquePaths) as Array<{ path: string; content: string | null }>;
+
+  return new Map(
+    rows.map((row) => [row.path, row.content ? row.content.slice(0, maxChars).trim() : '']),
+  );
 }
 
 /**
@@ -802,10 +808,14 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     if (options.tag && (!Array.isArray(options.tag) || options.tag.length > 0)) {
       related = related.filter((r) => matchesTagFilter(r.tags, options.tag!));
     }
+    const fallbackSnippets = getSnippetFallbacks(
+      related.filter((r) => !r.snippet || r.snippet.length < snippetLength).map((r) => r.path),
+      snippetLength,
+    );
     // Expand short snippets up to snippetLength, then cap
     for (const r of related) {
       if (!r.snippet || r.snippet.length < snippetLength) {
-        const fallback = getSnippetFallback(r.path, snippetLength);
+        const fallback = fallbackSnippets.get(r.path) ?? '';
         if (fallback.length > r.snippet.length) r.snippet = fallback;
       }
       if (r.snippet.length > snippetLength) r.snippet = r.snippet.slice(0, snippetLength);
@@ -863,11 +873,18 @@ export async function search(input: string, options: SearchOptions = {}): Promis
 
   const paths = results.map((r) => r.path);
   const { links, backlinks } = getLinksForPaths(paths);
+  const fallbackSnippets = getSnippetFallbacks(
+    paths.filter((path, index) => {
+      const raw = results[index];
+      return raw ? !raw.snippet || raw.snippet.length < snippetLength : false;
+    }),
+    snippetLength,
+  );
 
   const final = results.map((r, i) => {
     const sr = toSearchResult(r);
     if (!sr.snippet || sr.snippet.length < snippetLength) {
-      const fallback = getSnippetFallback(sr.path, snippetLength);
+      const fallback = fallbackSnippets.get(sr.path) ?? '';
       if (fallback.length > sr.snippet.length) sr.snippet = fallback;
     }
     if (sr.snippet.length > snippetLength) sr.snippet = sr.snippet.slice(0, snippetLength);
