@@ -1,5 +1,9 @@
 # Obsidian Hybrid Search
 
+[![npm version](https://img.shields.io/npm/v/obsidian-hybrid-search)](https://www.npmjs.com/package/obsidian-hybrid-search)
+[![Tests](https://github.com/flowing-abyss/obsidian-hybrid-search/actions/workflows/ci.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-hybrid-search/actions)
+[![Downloads](https://img.shields.io/npm/dw/obsidian-hybrid-search)](https://www.npmjs.com/package/obsidian-hybrid-search)
+
 An [MCP server](https://modelcontextprotocol.io) and CLI tool that makes your Obsidian vault queryable by AI assistants. Indexes notes into SQLite with FTS5 full-text search, trigram fuzzy matching, and `sqlite-vec` vector similarity — results are merged with Reciprocal Rank Fusion (RRF) and scored 0–1.
 
 Once connected, any MCP-compatible AI assistant can answer questions grounded in your actual notes: finding knowledge by meaning, exact phrase, or title; traversing the wikilink graph; filtering by tag or folder; always citing the source note. No guessing from training data, no manual copy-paste.
@@ -217,6 +221,7 @@ alias ohs='obsidian-hybrid-search'
 alias ohss='obsidian-hybrid-search --mode semantic'
 alias ohst='obsidian-hybrid-search --mode title'
 alias ohsf='obsidian-hybrid-search --mode fulltext'
+alias ohsr='obsidian-hybrid-search read'
 alias ohsi='obsidian-hybrid-search reindex'
 alias ohsst='obsidian-hybrid-search status'
 ```
@@ -228,6 +233,7 @@ ohs "zettelkasten"                        # hybrid search
 ohss "how to build a knowledge graph"     # semantic
 ohst "zettelkasten"                       # fuzzy title (typo-tolerant)
 ohsf "permanent notes"                    # fulltext BM25
+ohsr "notes/pkm/zettelkasten.md"          # read note by path
 ohsi                                      # reindex vault
 ohsst                                     # show status
 ```
