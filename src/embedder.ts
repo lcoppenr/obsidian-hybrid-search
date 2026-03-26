@@ -340,9 +340,6 @@ async function embedApiBatchWithFallback(texts: string[]): Promise<(Float32Array
       if (isTransient) {
         for (let attempt = 1; attempt <= 2; attempt++) {
           const delay = Math.pow(2, attempt) * 1000; // 2s, 4s
-          console.warn(
-            `[embedder] chunk failing (HTTP ${status}), retrying in ${delay}ms (attempt ${attempt}/2)`,
-          );
           await sleep(delay);
           try {
             return await embedApiBatch(texts);
@@ -351,13 +348,9 @@ async function embedApiBatchWithFallback(texts: string[]): Promise<(Float32Array
           }
         }
       }
-      console.warn(
-        '[embedder] chunk unembeddable, skipping embedding (note still indexed for text search)',
-      );
       return [null];
     }
     // Batch failed — retry each item individually
-    console.warn('[embedder] batch failed, retrying one by one:', (batchErr as Error).message);
     const results: (Float32Array | null)[] = [];
     for (const text of texts) {
       const [emb] = await embedApiBatchWithFallback([text]);
