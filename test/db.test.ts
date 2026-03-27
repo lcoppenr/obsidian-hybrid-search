@@ -174,6 +174,46 @@ describe('frontmatter filter', () => {
     assert.ok(result.has('fm-filter-test.md'), 'should include note without excluded status');
     assert.ok(!result.has('fm-filter-test-2.md'), 'should exclude note with status:done');
   });
+
+  it('frontmatter filter is case-insensitive', () => {
+    const result = filterNotePathsByFrontmatter(['fm-filter-test.md'], 'status:TODO');
+    assert.ok(result.has('fm-filter-test.md'), 'should match case-insensitive');
+  });
+
+  it('frontmatter filter with no matching field returns empty', () => {
+    const result = filterNotePathsByFrontmatter(['fm-filter-test.md'], 'nonexistent:value');
+    assert.equal(result.size, 0, 'should return empty for non-matching field');
+  });
+
+  it('frontmatter filter handles array values', () => {
+    upsertNote({
+      path: 'fm-array-test.md',
+      title: 'FM Array Test',
+      tags: [],
+      content: 'content',
+      frontmatter: { tags: ['todo', 'work'] },
+      mtime: Date.now(),
+      hash: 'fm-array-test',
+      chunks: [{ text: 'content', embedding: fakeEmbedding }],
+    });
+    const result = filterNotePathsByFrontmatter(['fm-array-test.md'], 'tags:todo');
+    assert.ok(result.has('fm-array-test.md'), 'should match array value');
+  });
+
+  it('empty frontmatter filter returns all paths', () => {
+    upsertNote({
+      path: 'fm-empty-test.md',
+      title: 'FM Empty Test',
+      tags: [],
+      content: 'content',
+      frontmatter: {},
+      mtime: Date.now(),
+      hash: 'fm-empty-test',
+      chunks: [{ text: 'content', embedding: fakeEmbedding }],
+    });
+    const result = filterNotePathsByFrontmatter(['fm-empty-test.md'], 'status:anything');
+    assert.equal(result.size, 0, 'should return empty when no matching frontmatter');
+  });
 });
 
 describe('vec_chunks cleanup', () => {

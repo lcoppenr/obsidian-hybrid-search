@@ -47,7 +47,8 @@
     "commander": "^12.0.0",
     "gray-matter": "^4.0.3",
     "picocolors": "^1.1.1",
-    "sqlite-vec": "latest"
+    "sqlite-vec": "latest",
+    "yaml": "^2.8.3"
   },
   "optionalDependencies": {
     "@huggingface/transformers": "^3.8.1"
