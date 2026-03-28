@@ -275,9 +275,8 @@ export function searchBm25(
           if (buildAnchors) {
             // Use the BM25 snippet (positioned near the match) for matchText, not the full chunk.
             // Strip SQLite snippet ellipsis markers and HTML tags before extracting match text.
-            const snippetForMatch = result.snippet
-              .replace(/^\.\.\./gm, '')
-              .replace(/\.\.\.$/gm, '');
+            // Remove all SQLite snippet ellipsis markers (may appear anywhere in the text)
+            const snippetForMatch = result.snippet.replace(/\.\.\./g, '');
             result.bm25Anchor = {
               kind: 'bm25',
               headingPath: data.headingPath,

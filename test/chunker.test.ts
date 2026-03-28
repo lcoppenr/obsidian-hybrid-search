@@ -225,8 +225,12 @@ describe('buildMatchText', () => {
     assert.equal(buildMatchText('**bold** and *italic*'), 'bold and italic');
   });
 
-  it('strips wikilinks with alias', () => {
-    assert.equal(buildMatchText('[[My Note|alias]]'), 'My Note');
+  it('strips wikilinks with alias, using alias text', () => {
+    assert.equal(buildMatchText('[[My Note|alias]]'), 'alias');
+  });
+
+  it('strips wikilinks without alias, using target text', () => {
+    assert.equal(buildMatchText('[[My Note]]'), 'My Note');
   });
 
   it('strips task checkbox', () => {
@@ -268,5 +272,23 @@ describe('buildMatchText', () => {
 
   it('strips plain blockquote marker', () => {
     assert.equal(buildMatchText('> Some quoted text here'), 'Some quoted text here');
+  });
+
+  it('skips callout type-only line (empty title) and uses next line', () => {
+    assert.equal(
+      buildMatchText('> [!quote]\n> Любая сложная мысль требует фиксации.'),
+      'Любая сложная мысль требует фиксации.',
+    );
+  });
+
+  it('strips embed wikilinks ![[Note]] entirely', () => {
+    assert.equal(buildMatchText('![[Some embedded note]] and more text'), 'and more text');
+  });
+
+  it('skips fenced code block delimiter lines', () => {
+    assert.equal(
+      buildMatchText('```table-of-contents\nstyle: nestedList\n```\nActual content here'),
+      'Actual content here',
+    );
   });
 });

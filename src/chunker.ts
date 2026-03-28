@@ -163,24 +163,39 @@ export function slidingWindow(
  */
 export function buildMatchText(chunkText: string): string {
   const lines = chunkText.split('\n');
-  // Skip leading heading lines (e.g. "## Creating Notes")
-  const bodyLines = lines.filter((l) => !/^#{1,6}\s/.test(l.trimStart()));
+  // Skip heading lines and everything inside fenced code blocks
+  const bodyLines: string[] = [];
+  let inCode = false;
+  for (const l of lines) {
+    if (/^```/.test(l.trimStart())) {
+      inCode = !inCode;
+      continue;
+    }
+    if (inCode || /^#{1,6}\s/.test(l.trimStart())) continue;
+    bodyLines.push(l);
+  }
   const fallback = (lines[0] ?? '').replace(/^#{1,6}\s+/, '');
-  const raw = (bodyLines.find((l) => l.trim().length > 0) ?? fallback).trim();
 
-  return raw
-    .replace(/^(?:>\s*)+(?:\[![^\]]*\]\s*)?/, '') // strip blockquote/callout markers ("> [!type] " or "> ")
-    .replace(/<[^>]+>/g, '') // strip HTML tags (<u>, <mark>, etc. from BM25 snippets)
-    .replace(/\[\^[^\]]+\]/g, '') // strip footnote references ([^1], [^abc])
-    .replace(/!\[.*?\]\(.*?\)/g, '') // images
-    .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // [[wikilinks]] → text
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [links](url) → text
-    .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // bold / italic
-    .replace(/`([^`]+)`/g, '$1') // inline code
-    .replace(/^(?:[-*+]|\d+[.)]) \s*/m, '') // list markers
-    .replace(/^\[[xX ]\]\s*/m, '') // task checkboxes
-    .trim()
-    .slice(0, 80);
+  // Iterate lines until one yields non-empty text after stripping markdown.
+  // This skips e.g. callout type-only lines ("> [!quote]" strips to "").
+  for (const line of [...bodyLines, fallback]) {
+    if (!line.trim()) continue;
+    const result = line
+      .replace(/^(?:>\s*)+(?:\[![^\]]*\]\s*)?(?:>\s*)*/, '') // blockquote/callout markers (handles "> [!type] > ...")
+      .replace(/<[^>]+>/g, '') // HTML tags (<u>, <mark>, etc.)
+      .replace(/\[\^[^\]]+\]/g, '') // footnote references ([^1])
+      .replace(/!\[\[[^\]]+\]\]/g, '') // embed wikilinks ![[Note]] → strip entirely
+      .replace(/!\[.*?\]\(.*?\)/g, '') // images ![alt](url)
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t: string, a: string) => a || t) // [[wikilinks]] → alias if present, else target
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [links](url) → text
+      .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // bold / italic
+      .replace(/`([^`]+)`/g, '$1') // inline code
+      .replace(/^(?:[-*+]|\d+[.)]) \s*/m, '') // list markers
+      .replace(/^\[[xX ]\]\s*/m, '') // task checkboxes
+      .trim();
+    if (result) return result.slice(0, 80);
+  }
+  return '';
 }
 
 export function chunkNote(content: string, contextLength: number): Chunk[] {
