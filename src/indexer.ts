@@ -124,6 +124,8 @@ export async function indexFile(
         text: c.text,
         headingPath: c.headingChain.length > 0 ? c.headingChain.join(' > ') : null,
         embedding: embeddings[i] ?? null,
+        charStart: c.charStart,
+        charEnd: c.charEnd,
       })),
     });
 
