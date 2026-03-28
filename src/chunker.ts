@@ -3,6 +3,8 @@ import { config } from './config.js';
 interface Chunk {
   text: string;
   headingChain: string[];
+  charStart: number;
+  charEnd: number;
 }
 
 const SKIP_PATTERNS = [
@@ -38,6 +40,7 @@ interface Section {
   headingChain: string[];
   body: string;
   text: string;
+  charStart: number; // position of the heading line (or 0 for pre-heading body)
 }
 
 export function splitBySections(content: string): Section[] {
@@ -48,12 +51,20 @@ export function splitBySections(content: string): Section[] {
   let currentBody: string[] = [];
   // Slots for H1–H6; null means "not set at this level"
   const headingSlots: (string | null)[] = [null, null, null, null, null, null];
+  let pos = 0;
+  let currentSectionStart = 0;
 
   const flush = () => {
     const body = currentBody.join('\n');
     if (!shouldSkipChunk(body)) {
       const text = currentHeading ? `${currentHeading}\n${body}`.trim() : body.trim();
-      sections.push({ heading: currentHeading, headingChain: currentHeadingChain, body, text });
+      sections.push({
+        heading: currentHeading,
+        headingChain: currentHeadingChain,
+        body,
+        text,
+        charStart: currentSectionStart,
+      });
     }
     currentBody = [];
   };
@@ -65,12 +76,14 @@ export function splitBySections(content: string): Section[] {
     if (/^(`{3,}|~{3,})/.test(line)) {
       insideCodeFence = !insideCodeFence;
       currentBody.push(line);
+      pos += line.length + 1;
       continue;
     }
 
     const match = !insideCodeFence ? /^(#{1,6})\s+/.exec(line) : null;
     if (match) {
       flush();
+      currentSectionStart = pos;
       currentHeading = line;
       const level = match[1]!.length; // 1–6
       headingSlots[level - 1] = line;
@@ -80,6 +93,7 @@ export function splitBySections(content: string): Section[] {
     } else {
       currentBody.push(line);
     }
+    pos += line.length + 1;
   }
   flush();
 
@@ -91,6 +105,7 @@ export function slidingWindow(
   contextLength: number,
   overlap: number,
   headingChain: string[] = [],
+  sectionOffset = 0,
 ): Chunk[] {
   const stepTokens = Math.max(contextLength - overlap, Math.ceil(contextLength / 2));
   const chunks: Chunk[] = [];
@@ -108,7 +123,12 @@ export function slidingWindow(
 
     const chunk = text.slice(start, end).trim();
     if (!shouldSkipChunk(chunk)) {
-      chunks.push({ text: chunk, headingChain });
+      chunks.push({
+        text: chunk,
+        headingChain,
+        charStart: sectionOffset + start,
+        charEnd: sectionOffset + end,
+      });
     }
     if (end >= text.length) break;
 
@@ -123,33 +143,78 @@ export function slidingWindow(
     start += stepped;
   }
 
-  return chunks.length > 0 ? chunks : [{ text: text.trim(), headingChain }];
+  return chunks.length > 0
+    ? chunks
+    : [
+        {
+          text: text.trim(),
+          headingChain,
+          charStart: sectionOffset,
+          charEnd: sectionOffset + text.length,
+        },
+      ];
+}
+
+/**
+ * Build a DOM-matchable string from chunk text.
+ * Strips heading lines and markdown syntax so the result matches
+ * the textContent of a rendered DOM block.
+ * Truncated to 80 characters.
+ */
+export function buildMatchText(chunkText: string): string {
+  const lines = chunkText.split('\n');
+  // Skip leading heading lines (e.g. "## Creating Notes")
+  const bodyLines = lines.filter((l) => !/^#{1,6}\s/.test(l.trimStart()));
+  const fallback = (lines[0] ?? '').replace(/^#{1,6}\s+/, '');
+  const raw = (bodyLines.find((l) => l.trim().length > 0) ?? fallback).trim();
+
+  return raw
+    .replace(/!\[.*?\]\(.*?\)/g, '') // images
+    .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // [[wikilinks]] → text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [links](url) → text
+    .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // bold / italic
+    .replace(/`([^`]+)`/g, '$1') // inline code
+    .replace(/^(?:[-*+]|\d+[.)]) \s*/m, '') // list markers
+    .replace(/^\[[xX ]\]\s*/m, '') // task checkboxes
+    .trim()
+    .slice(0, 80);
 }
 
 export function chunkNote(content: string, contextLength: number): Chunk[] {
   if (estimateTokens(content) <= contextLength) {
-    return [{ text: content.trim(), headingChain: [] }];
+    return [{ text: content.trim(), headingChain: [], charStart: 0, charEnd: content.length }];
   }
 
   const sections = splitBySections(content);
 
   if (sections.length <= 1) {
-    return slidingWindow(content, contextLength, config.chunkOverlap, []);
+    return slidingWindow(content, contextLength, config.chunkOverlap, [], 0);
   }
 
   const chunks: Chunk[] = [];
   for (const section of sections) {
     if (shouldSkipChunk(section.body)) continue;
     if (estimateTokens(section.text) <= contextLength) {
-      chunks.push({ text: section.text, headingChain: section.headingChain });
+      chunks.push({
+        text: section.text,
+        headingChain: section.headingChain,
+        charStart: section.charStart,
+        charEnd: section.charStart + section.text.length,
+      });
     } else {
       chunks.push(
-        ...slidingWindow(section.text, contextLength, config.chunkOverlap, section.headingChain),
+        ...slidingWindow(
+          section.text,
+          contextLength,
+          config.chunkOverlap,
+          section.headingChain,
+          section.charStart,
+        ),
       );
     }
   }
 
   return chunks.length > 0
     ? chunks
-    : slidingWindow(content, contextLength, config.chunkOverlap, []);
+    : [{ text: content.trim(), headingChain: [], charStart: 0, charEnd: content.length }];
 }

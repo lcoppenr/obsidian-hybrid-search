@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'vitest';
-import { chunkNote, estimateTokens, slidingWindow, splitBySections } from '../src/chunker.js';
+import {
+  buildMatchText,
+  chunkNote,
+  estimateTokens,
+  slidingWindow,
+  splitBySections,
+} from '../src/chunker.js';
 
 describe('estimateTokens', () => {
   it('approximates tokens as chars/4', () => {
@@ -162,5 +168,94 @@ describe('chunkNote', () => {
     const bigSection = `## Big Section\n\n${'word '.repeat(1000)}`;
     const chunks = chunkNote(bigSection, 50);
     assert.ok(chunks.length > 1);
+  });
+});
+
+describe('splitBySections — position tracking', () => {
+  it('flat note: charStart=0', () => {
+    const content = 'This is body text long enough to exceed the minimum chunk length threshold.';
+    const sections = splitBySections(content);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0]!.charStart, 0);
+  });
+
+  it('note with heading: body charStart = heading.length + 1', () => {
+    const heading = '## Section';
+    const body = 'Body text long enough to exceed the minimum chunk length filter here.';
+    const content = `${heading}\n${body}`;
+    const sections = splitBySections(content);
+    assert.equal(sections.length, 1);
+    // charStart points to start of heading line (not body)
+    assert.equal(sections[0]!.charStart, 0);
+    assert.ok(content.slice(sections[0]!.charStart).startsWith(heading));
+  });
+
+  it('multiple sections: slice matches section text', () => {
+    const body = 'Body content that is long enough to pass the minimum length filter here.';
+    const content = `## First\n${body}\n## Second\n${body}`;
+    const sections = splitBySections(content);
+    assert.equal(sections.length, 2);
+    // content.slice(charStart) starts with the section's heading
+    assert.ok(content.slice(sections[0]!.charStart).startsWith('## First'));
+    assert.ok(content.slice(sections[1]!.charStart).startsWith('## Second'));
+  });
+});
+
+describe('slidingWindow — position tracking', () => {
+  it('single chunk: charStart = sectionOffset', () => {
+    const text = 'Short text that fits within context window.';
+    const chunks = slidingWindow(text, 512, 64, [], 50);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0]!.charStart, 50);
+    assert.equal(chunks[0]!.charEnd, 50 + text.length);
+  });
+
+  it('multiple windows: charStart increases by step', () => {
+    const text = 'word '.repeat(300);
+    const chunks = slidingWindow(text, 50, 10, [], 0);
+    assert.ok(chunks.length > 1);
+    assert.equal(chunks[0]!.charStart, 0);
+    assert.ok(chunks[1]!.charStart > 0);
+    assert.ok(chunks[1]!.charStart < chunks[1]!.charEnd);
+  });
+});
+
+describe('buildMatchText', () => {
+  it('strips bold and italic', () => {
+    assert.equal(buildMatchText('**bold** and *italic*'), 'bold and italic');
+  });
+
+  it('strips wikilinks with alias', () => {
+    assert.equal(buildMatchText('[[My Note|alias]]'), 'My Note');
+  });
+
+  it('strips task checkbox', () => {
+    assert.equal(buildMatchText('- [ ] task item text here'), 'task item text here');
+  });
+
+  it('strips list marker', () => {
+    assert.equal(buildMatchText('- plain list item text here'), 'plain list item text here');
+  });
+
+  it('skips heading line, returns body', () => {
+    assert.equal(
+      buildMatchText('## Creating Notes\nAtomic notes are the core principle.'),
+      'Atomic notes are the core principle.',
+    );
+  });
+
+  it('strips markdown link', () => {
+    assert.equal(buildMatchText('[link text](https://example.com)'), 'link text');
+  });
+
+  it('truncates to 80 chars', () => {
+    const result = buildMatchText('a'.repeat(200));
+    assert.equal(result.length, 80);
+  });
+
+  it('falls back to first line when all are headings', () => {
+    const result = buildMatchText('## Only a heading');
+    assert.ok(result.length > 0);
+    assert.ok(!result.startsWith('##'));
   });
 });
