@@ -170,6 +170,8 @@ export function buildMatchText(chunkText: string): string {
 
   return raw
     .replace(/^(?:>\s*)+(?:\[![^\]]*\]\s*)?/, '') // strip blockquote/callout markers ("> [!type] " or "> ")
+    .replace(/<[^>]+>/g, '') // strip HTML tags (<u>, <mark>, etc. from BM25 snippets)
+    .replace(/\[\^[^\]]+\]/g, '') // strip footnote references ([^1], [^abc])
     .replace(/!\[.*?\]\(.*?\)/g, '') // images
     .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, '$1') // [[wikilinks]] → text
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [links](url) → text

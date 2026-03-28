@@ -269,14 +269,19 @@ export function searchBm25(
       for (const result of results) {
         const data = chunkDataMap.get(result.path);
         if (data) {
-          if (snippetLength > 0) {
+          if (snippetLength > 0 && data.headingPath) {
             result.snippet = `${data.headingPath}\n${result.snippet}`;
           }
           if (buildAnchors) {
+            // Use the BM25 snippet (positioned near the match) for matchText, not the full chunk.
+            // Strip SQLite snippet ellipsis markers and HTML tags before extracting match text.
+            const snippetForMatch = result.snippet
+              .replace(/^\.\.\./gm, '')
+              .replace(/\.\.\.$/gm, '');
             result.bm25Anchor = {
               kind: 'bm25',
               headingPath: data.headingPath,
-              matchText: buildMatchText(data.chunkText),
+              matchText: buildMatchText(snippetForMatch),
               charStart: data.charStart,
               charEnd: data.charEnd,
             };
@@ -511,7 +516,7 @@ function getHeadingPathForSnippet(notePath: string, snippetText: string): string
 }
 
 type Bm25ChunkData = {
-  headingPath: string;
+  headingPath: string | null;
   chunkText: string;
   charStart: number | null;
   charEnd: number | null;
@@ -534,7 +539,6 @@ function getChunkDataForBm25Results(results: RawResult[]): Map<string, Bm25Chunk
          FROM notes n
          JOIN chunks c ON c.note_id = n.id
          WHERE n.path IN (${placeholders})
-           AND c.heading_path IS NOT NULL
          ORDER BY n.path, c.chunk_index`,
       )
       .all(...uniquePaths) as Array<{
@@ -587,17 +591,19 @@ function matchChunkDataFromRows(
 ): Map<string, Bm25ChunkData> {
   const result = new Map<string, Bm25ChunkData>();
   for (const row of rows) {
-    if (result.has(row.path) || !row.heading_path) continue;
     const key = snippetKeys.get(row.path);
-    if (!key) continue;
-    if (row.text.includes(key)) {
-      result.set(row.path, {
-        headingPath: row.heading_path,
-        chunkText: row.text,
-        charStart: row.char_start ?? null,
-        charEnd: row.char_end ?? null,
-      });
-    }
+    if (!key || !row.text.includes(key)) continue;
+
+    const existing = result.get(row.path);
+    // Don't replace a heading-path match with a null-heading one (prefer heading context)
+    if (existing?.headingPath) continue;
+
+    result.set(row.path, {
+      headingPath: row.heading_path ?? null,
+      chunkText: row.text,
+      charStart: row.char_start ?? null,
+      charEnd: row.char_end ?? null,
+    });
   }
   return result;
 }
@@ -612,10 +618,10 @@ function fillMissingChunkData(
     if (chunkData.has(notePath)) continue;
     const note = stmt.get(notePath) as { content: string } | undefined;
     if (!note?.content) continue;
+    // Set data even when there's no heading before the match (headingPath may be null)
+    if (!note.content.includes(key)) continue;
     const headingPath = getHeadingPathFromContent(note.content, key);
-    if (headingPath) {
-      chunkData.set(notePath, { headingPath, chunkText: key, charStart: null, charEnd: null });
-    }
+    chunkData.set(notePath, { headingPath, chunkText: key, charStart: null, charEnd: null });
   }
 }
 
