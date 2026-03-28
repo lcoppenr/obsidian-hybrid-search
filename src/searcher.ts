@@ -108,9 +108,9 @@ function matchesScopeFilter(notePath: string, scope: string | string[]): boolean
     })
   )
     return false;
-  // Multiple includes = AND logic (note must match ALL of the includes)
+  // Multiple includes = OR logic (note must match ANY of the includes)
   if (includes.length === 0) return true;
-  return includes.every((inc) => {
+  return includes.some((inc) => {
     const incScope = inc.endsWith('/') ? inc : inc + '/';
     return notePath.startsWith(inc) || notePath.startsWith(incScope);
   });

@@ -204,6 +204,51 @@ describe('handleStdioLine — integration with real search', () => {
       assert.ok(typeof r.title === 'string', 'title must be string');
       assert.ok(typeof r.score === 'number', 'score must be number');
       assert.ok(Array.isArray(r.tags), 'tags must be array');
+      assert.ok(Array.isArray(r.aliases), 'aliases must be array');
     }
+  });
+
+  it('frontmatter option is forwarded to search function', async () => {
+    let capturedOpts: Parameters<SearchFunction>[1] = {};
+    // eslint-disable-next-line @typescript-eslint/require-await
+    const captureFn: SearchFunction = async (_query, opts) => {
+      capturedOpts = opts ?? {};
+      return [];
+    };
+
+    await handleStdioLine(
+      '{"id":"fm1","query":"test","options":{"frontmatter":"status:active"}}',
+      captureFn,
+      () => {},
+    );
+
+    assert.deepEqual(capturedOpts, { frontmatter: 'status:active' });
+  });
+
+  it('frontmatter array option is forwarded to search function', async () => {
+    let capturedOpts: Parameters<SearchFunction>[1] = {};
+    // eslint-disable-next-line @typescript-eslint/require-await
+    const captureFn: SearchFunction = async (_query, opts) => {
+      capturedOpts = opts ?? {};
+      return [];
+    };
+
+    await handleStdioLine(
+      '{"id":"fm2","query":"test","options":{"frontmatter":["status:active","priority:high"]}}',
+      captureFn,
+      () => {},
+    );
+
+    assert.deepEqual(capturedOpts, { frontmatter: ['status:active', 'priority:high'] });
+  });
+
+  it('filter-only mode (empty query with tag) returns results', async () => {
+    const resp = parseResponse(
+      await processLine('{"id":"fo1","query":"","options":{"tag":"pkm"}}'),
+    );
+    assert.strictEqual(resp.id, 'fo1');
+    assert.ok(Array.isArray(resp.results), 'results must be an array');
+    const paths = resp.results.map((r) => r.path);
+    assert.ok(paths.includes('alpha.md'), 'alpha.md has pkm tag and should appear');
   });
 });

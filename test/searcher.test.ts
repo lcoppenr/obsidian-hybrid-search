@@ -94,6 +94,28 @@ beforeAll(() => {
     });
   }
 
+  // Frontmatter-only notes (no body content) in projects/ folder
+  upsertNote({
+    path: 'projects/active-project.md',
+    title: 'Active Project',
+    tags: ['project'],
+    content: '',
+    frontmatter: { status: 'active', priority: 'high' },
+    mtime: Date.now(),
+    hash: 'hash-active-project',
+    chunks: [],
+  });
+  upsertNote({
+    path: 'projects/done-project.md',
+    title: 'Done Project',
+    tags: ['project'],
+    content: '',
+    frontmatter: { status: 'done', priority: 'low' },
+    mtime: Date.now(),
+    hash: 'hash-done-project',
+    chunks: [],
+  });
+
   // Note with short Cyrillic alias (< 3 chars) — tests alias exact-match path
   upsertNote({
     path: 'zk-system.md',
@@ -326,14 +348,18 @@ describe('scope filter', () => {
     }
   });
 
-  it('multiple scope filters use AND logic', async () => {
+  it('multiple scope filters use OR logic', async () => {
+    // notes/ has scoped.md; projects/ has active/done project — OR means both folders match
     const results = await search('', {
-      scope: ['notes/', 'sub/'],
+      scope: ['notes/', 'projects/'],
       limit: 100,
     });
+    assert.ok(results.length > 0, 'should return results from either scope');
     for (const r of results) {
-      assert.ok(r.path.startsWith('notes/'), `path "${r.path}" should start with notes/`);
-      assert.ok(r.path.includes('sub/'), `path "${r.path}" should contain sub/`);
+      assert.ok(
+        r.path.startsWith('notes/') || r.path.startsWith('projects/'),
+        `path "${r.path}" should be in notes/ or projects/`,
+      );
     }
   });
 });
@@ -366,6 +392,71 @@ describe('filter-only mode', () => {
       assert.ok(r.path.startsWith('notes/'), `path "${r.path}" should start with notes/`);
       assert.ok(r.tags.includes('shared'), `note "${r.path}" should have shared tag`);
     }
+  });
+
+  it('filter-only with frontmatter returns matching notes', async () => {
+    const results = await search('', { frontmatter: 'status:active' });
+    assert.ok(results.length > 0, 'should return notes with status=active');
+    const paths = results.map((r) => r.path);
+    assert.ok(paths.includes('projects/active-project.md'), 'active project should match');
+    assert.ok(!paths.includes('projects/done-project.md'), 'done project should not match');
+  });
+
+  it('filter-only with tag + frontmatter applies both filters', async () => {
+    // project tag AND status:active → only active-project.md (not done-project.md)
+    const results = await search('', { tag: 'project', frontmatter: 'status:active' });
+    assert.ok(results.length > 0, 'should return results');
+    for (const r of results) {
+      assert.ok(r.tags.includes('project'), `note "${r.path}" should have project tag`);
+    }
+    const paths = results.map((r) => r.path);
+    assert.ok(paths.includes('projects/active-project.md'), 'active project should match');
+    assert.ok(!paths.includes('projects/done-project.md'), 'done project should not match');
+  });
+
+  it('filter-only with tag + scope + frontmatter applies all three filters', async () => {
+    // project tag + projects/ scope + status:active → only active-project.md
+    const results = await search('', {
+      tag: 'project',
+      scope: 'projects/',
+      frontmatter: 'status:active',
+    });
+    assert.ok(results.length > 0, 'should return results');
+    for (const r of results) {
+      assert.ok(r.path.startsWith('projects/'), `path "${r.path}" should be in projects/`);
+      assert.ok(r.tags.includes('project'), `note "${r.path}" should have project tag`);
+    }
+    const paths = results.map((r) => r.path);
+    assert.ok(paths.includes('projects/active-project.md'));
+    assert.ok(!paths.includes('projects/done-project.md'));
+  });
+
+  it('cache invalidation: new note appears after bumpIndexVersion', async () => {
+    // Prime the cache with a frontmatter filter query
+    const before = await search('', { frontmatter: 'status:active' });
+    const beforePaths = before.map((r) => r.path);
+    assert.ok(!beforePaths.includes('projects/new-active.md'), 'new note not yet indexed');
+
+    // Add a new note with the same filter criteria, bump version to invalidate cache
+    upsertNote({
+      path: 'projects/new-active.md',
+      title: 'New Active Project',
+      tags: ['project'],
+      content: '',
+      frontmatter: { status: 'active' },
+      mtime: Date.now(),
+      hash: 'hash-new-active',
+      chunks: [],
+    });
+    bumpIndexVersion();
+
+    const after = await search('', { frontmatter: 'status:active' });
+    const afterPaths = after.map((r) => r.path);
+    assert.ok(
+      afterPaths.includes('projects/new-active.md'),
+      'new note should appear after cache invalidation',
+    );
+    assert.ok(afterPaths.includes('projects/active-project.md'), 'existing note still present');
   });
 });
 
