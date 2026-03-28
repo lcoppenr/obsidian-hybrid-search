@@ -125,7 +125,13 @@ beforeAll(() => {
     content: 'A note-taking methodology by Niklas Luhmann.',
     mtime: Date.now(),
     hash: 'hash-zk-system',
-    chunks: [{ text: 'A note-taking methodology by Niklas Luhmann.', embedding: fakeEmbedding }],
+    chunks: [
+      {
+        text: 'A note-taking methodology by Niklas Luhmann.',
+        embedding: fakeEmbedding,
+        headingPath: '# Zettelkasten System',
+      },
+    ],
   });
 
   // Note with longer alias for exact-match dedup check
@@ -161,6 +167,24 @@ beforeAll(() => {
     mtime: Date.now(),
     hash: 'hash-s60-fuzzy',
     chunks: [{ text: 'nothing matches here', embedding: fakeEmbedding }],
+  });
+
+  // Note with zettelkasten content + heading chunk (for anchor tests)
+  upsertNote({
+    path: 'notes/pkm/zettelkasten.md',
+    title: 'Zettelkasten',
+    tags: ['pkm'],
+    content:
+      '# Zettelkasten\n\nA note-taking method developed by Niklas Luhmann. Each note contains one atomic idea linked to others through explicit references.\n',
+    mtime: Date.now(),
+    hash: 'hash-zettelkasten',
+    chunks: [
+      {
+        text: '# Zettelkasten\n\nA note-taking method developed by Niklas Luhmann. Each note contains one atomic idea linked to others through explicit references.\n',
+        embedding: fakeEmbedding,
+        headingPath: '# Zettelkasten',
+      },
+    ],
   });
 
   // BFS graph: note-a → note-b → note-c → note-a (cycle)
@@ -997,4 +1021,71 @@ describe('multi-query fan-out', () => {
       'path-based search should ignore queries[]',
     );
   }, 15000);
+});
+
+// ─── anchors: false (default) — previewAnchors absent ────────────────────────
+
+describe('anchors: false (default) — previewAnchors absent', () => {
+  it('search without anchors flag returns no previewAnchors', async () => {
+    const results = await search('zettelkasten', { mode: 'fulltext', limit: 3 });
+    assert.ok(results.length > 0);
+    for (const r of results) {
+      assert.equal(r.previewAnchors, undefined, 'previewAnchors should not be present by default');
+    }
+  });
+});
+
+// ─── anchors: true — BM25 anchor ─────────────────────────────────────────────
+
+describe('anchors: true — BM25 anchor', () => {
+  it('fulltext search populates bm25 anchor when chunk found', async () => {
+    const results = await search('zettelkasten', {
+      mode: 'fulltext',
+      limit: 3,
+      anchors: true,
+      snippetLength: 300,
+    });
+    // At least one result should have anchors (notes with "zettelkasten" exist in fixture vault)
+    const withAnchors = results.filter((r) => r.previewAnchors && r.previewAnchors.length > 0);
+    assert.ok(withAnchors.length > 0, 'expected at least one result with previewAnchors');
+    const anchor = withAnchors[0]!.previewAnchors![0]!;
+    assert.equal(anchor.kind, 'bm25');
+    assert.ok(anchor.matchText.length > 0 && anchor.matchText.length <= 80);
+    assert.ok(!anchor.matchText.includes('**'), 'matchText should strip bold markdown');
+    assert.equal(withAnchors[0]!.primaryAnchorIndex, 0);
+  });
+});
+
+// ─── anchors: true — cache key isolation ─────────────────────────────────────
+
+describe('anchors: true — cache key isolation', () => {
+  it('anchors:false and anchors:true do not share cache entries', async () => {
+    bumpIndexVersion(); // isolate from other test state
+    const noAnchor = await search('zettelkasten', {
+      mode: 'fulltext',
+      anchors: false,
+      snippetLength: 300,
+    });
+    const withAnchor = await search('zettelkasten', {
+      mode: 'fulltext',
+      anchors: true,
+      snippetLength: 300,
+    });
+    assert.equal(noAnchor[0]?.previewAnchors, undefined);
+    assert.ok(withAnchor[0]?.previewAnchors !== undefined);
+  });
+});
+
+// ─── anchors: true — related mode produces no anchors ────────────────────────
+
+describe('anchors: true — related mode produces no anchors', () => {
+  it('related search never sets previewAnchors', async () => {
+    const results = await search('notes/pkm/zettelkasten.md', {
+      related: true,
+      anchors: true,
+    });
+    for (const r of results) {
+      assert.equal(r.previewAnchors, undefined, 'related mode should not set previewAnchors');
+    }
+  });
 });

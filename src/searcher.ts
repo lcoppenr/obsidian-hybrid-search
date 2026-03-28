@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { buildMatchText } from './chunker.js';
 import { config } from './config.js';
 import {
   filterNotePathsByFrontmatter,
@@ -36,6 +37,14 @@ export interface NoteReadMiss {
 
 export type ReadResult = NoteReadResult | NoteReadMiss;
 
+export interface MatchAnchor {
+  kind: 'bm25' | 'semantic';
+  headingPath: string | null;
+  matchText: string; // first ~80 stripped chars of chunk body for DOM block lookup
+  charStart: number | null; // null if chunk indexed before this migration
+  charEnd: number | null;
+}
+
 export interface SearchResult {
   path: string;
   title: string;
@@ -54,6 +63,8 @@ export interface SearchResult {
     fuzzy_title: number | null;
     hybrid: number | null;
   };
+  previewAnchors?: MatchAnchor[];
+  primaryAnchorIndex?: number;
 }
 
 export interface SearchOptions {
@@ -77,6 +88,8 @@ export interface SearchOptions {
    * When length ≤ 1, falls back to single-query behaviour.
    */
   queries?: string[];
+  /** When true, populates previewAnchors on each result with chunk location data. */
+  anchors?: boolean;
 }
 
 interface RawResult {
@@ -94,6 +107,8 @@ interface RawResult {
     fuzzy_title?: number;
     hybrid?: number; // RRF score, set when mode='hybrid'
   };
+  semanticAnchor?: MatchAnchor;
+  bm25Anchor?: MatchAnchor;
 }
 
 function matchesScopeFilter(notePath: string, scope: string | string[]): boolean {
@@ -207,7 +222,12 @@ type FtsRow = {
   rank: number;
 };
 
-export function searchBm25(query: string, limit: number, snippetLength = 300): RawResult[] {
+export function searchBm25(
+  query: string,
+  limit: number,
+  snippetLength = 300,
+  buildAnchors = false,
+): RawResult[] {
   const db = getDb();
   const numTokens = Math.max(10, Math.ceil(snippetLength / 4));
   const stmt = db.prepare<[number, string, number], FtsRow>(
@@ -231,7 +251,7 @@ export function searchBm25(query: string, limit: number, snippetLength = 300): R
     // match for every other term in the query.
     const rows = stmt.all(numTokens, toFtsQuery(query, 'OR'), limit);
 
-    const results = rows.map((row) => ({
+    const results: RawResult[] = rows.map((row) => ({
       path: row.path,
       title: row.title ?? '',
       tags: row.tags ?? '[]',
@@ -245,11 +265,22 @@ export function searchBm25(query: string, limit: number, snippetLength = 300): R
     // Enrich BM25 snippets with heading breadcrumb from the chunks table.
     // Skip when snippetLength=0 (e.g. Obsidian plugin): the snippet would be
     // discarded anyway and the DB lookups (2 per result) are wasted work.
-    if (snippetLength > 0) {
-      const headingPaths = getHeadingPathsForBm25Results(results);
+    if (snippetLength > 0 || buildAnchors) {
+      const chunkDataMap = getChunkDataForBm25Results(results);
       for (const result of results) {
-        const headingPath = headingPaths.get(result.path);
-        if (headingPath) result.snippet = `${headingPath}\n${result.snippet}`;
+        const data = chunkDataMap.get(result.path);
+        if (data) {
+          if (snippetLength > 0) {
+            result.snippet = `${data.headingPath}\n${result.snippet}`;
+          }
+          result.bm25Anchor = {
+            kind: 'bm25',
+            headingPath: data.headingPath,
+            matchText: buildMatchText(data.chunkText),
+            charStart: data.charStart,
+            charEnd: data.charEnd,
+          };
+        }
       }
     }
     return results;
@@ -478,7 +509,14 @@ function getHeadingPathForSnippet(notePath: string, snippetText: string): string
   return chain.length > 0 ? chain.join(' > ') : null;
 }
 
-function getHeadingPathsForBm25Results(results: RawResult[]): Map<string, string> {
+type Bm25ChunkData = {
+  headingPath: string;
+  chunkText: string;
+  charStart: number | null;
+  charEnd: number | null;
+};
+
+function getChunkDataForBm25Results(results: RawResult[]): Map<string, Bm25ChunkData> {
   if (results.length === 0) return new Map();
 
   const db = getDb();
@@ -491,7 +529,7 @@ function getHeadingPathsForBm25Results(results: RawResult[]): Map<string, string
   try {
     const rows = db
       .prepare(
-        `SELECT n.path, c.heading_path, c.text, c.chunk_index
+        `SELECT n.path, c.heading_path, c.text, c.chunk_index, c.char_start, c.char_end
          FROM notes n
          JOIN chunks c ON c.note_id = n.id
          WHERE n.path IN (${placeholders})
@@ -503,16 +541,21 @@ function getHeadingPathsForBm25Results(results: RawResult[]): Map<string, string
       heading_path: string | null;
       text: string;
       chunk_index: number;
+      char_start: number | null;
+      char_end: number | null;
     }>;
 
-    const headingPaths = matchHeadingPathsFromChunks(rows, snippetKeys);
-    fillMissingHeadingPathsFromContent(db, headingPaths, snippetKeys);
-    return headingPaths;
+    const chunkData = matchChunkDataFromRows(rows, snippetKeys);
+    fillMissingChunkData(db, chunkData, snippetKeys);
+    return chunkData;
   } catch {
-    const fallback = new Map<string, string>();
+    const fallback = new Map<string, Bm25ChunkData>();
     for (const result of results) {
+      const key = snippetKeys.get(result.path) ?? '';
       const headingPath = getHeadingPathForSnippet(result.path, result.snippet);
-      if (headingPath) fallback.set(result.path, headingPath);
+      if (headingPath) {
+        fallback.set(result.path, { headingPath, chunkText: key, charStart: null, charEnd: null });
+      }
     }
     return fallback;
   }
@@ -531,32 +574,47 @@ function getSnippetKeysForHeadingLookup(results: RawResult[]): Map<string, strin
   return snippetKeys;
 }
 
-function matchHeadingPathsFromChunks(
-  rows: Array<{ path: string; heading_path: string | null; text: string }>,
+function matchChunkDataFromRows(
+  rows: Array<{
+    path: string;
+    heading_path: string | null;
+    text: string;
+    char_start: number | null;
+    char_end: number | null;
+  }>,
   snippetKeys: Map<string, string>,
-): Map<string, string> {
-  const headingPaths = new Map<string, string>();
+): Map<string, Bm25ChunkData> {
+  const result = new Map<string, Bm25ChunkData>();
   for (const row of rows) {
-    if (headingPaths.has(row.path) || !row.heading_path) continue;
+    if (result.has(row.path) || !row.heading_path) continue;
     const key = snippetKeys.get(row.path);
     if (!key) continue;
-    if (row.text.includes(key)) headingPaths.set(row.path, row.heading_path);
+    if (row.text.includes(key)) {
+      result.set(row.path, {
+        headingPath: row.heading_path,
+        chunkText: row.text,
+        charStart: row.char_start ?? null,
+        charEnd: row.char_end ?? null,
+      });
+    }
   }
-  return headingPaths;
+  return result;
 }
 
-function fillMissingHeadingPathsFromContent(
+function fillMissingChunkData(
   db: ReturnType<typeof getDb>,
-  headingPaths: Map<string, string>,
+  chunkData: Map<string, Bm25ChunkData>,
   snippetKeys: Map<string, string>,
 ): void {
   const stmt = db.prepare('SELECT content FROM notes WHERE path = ?');
   for (const [notePath, key] of snippetKeys) {
-    if (headingPaths.has(notePath)) continue;
+    if (chunkData.has(notePath)) continue;
     const note = stmt.get(notePath) as { content: string } | undefined;
     if (!note?.content) continue;
     const headingPath = getHeadingPathFromContent(note.content, key);
-    if (headingPath) headingPaths.set(notePath, headingPath);
+    if (headingPath) {
+      chunkData.set(notePath, { headingPath, chunkText: key, charStart: null, charEnd: null });
+    }
   }
 }
 
@@ -897,11 +955,12 @@ function cacheKey(input: string, options: SearchOptions): string {
   // Include reranker model so that changing RERANKER_MODEL invalidates the cache
   const rerankStr = options.rerank ? config.rerankerModel : '';
   const queriesStr = options.queries && options.queries.length > 1 ? options.queries.join('|') : '';
+  const anchorsStr = options.anchors ? 'a' : '';
   // Two-component version:
   //   getDbVersion() — shared via SQLite settings; any process that modifies the DB
   //                    bumps it, invalidating caches in all other processes.
   //   localVersion   — in-process counter; bumpIndexVersion() for test-suite isolation.
-  return `v${getDbVersion()}_${localVersion}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${fmStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}`;
+  return `v${getDbVersion()}_${localVersion}\0${input}\0${options.mode ?? ''}\0${scopeStr}\0${options.limit ?? ''}\0${options.threshold ?? ''}\0${tagStr}\0${fmStr}\0${options.snippetLength ?? ''}\0${options.notePath ?? ''}\0${rerankStr}\0${queriesStr}\0${anchorsStr}`;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- primary search entry-point; complexity is inherent in the multi-mode, multi-filter pipeline
@@ -1058,7 +1117,9 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     // Each sub-search uses a larger candidate pool so RRF has enough signal to rank correctly.
     const candidateLimit = Math.max(limit * 2, 20);
     const perQueryResults = await Promise.all(
-      options.queries.map((q) => searchByQuery(q, mode, candidateLimit, snippetLength, false)),
+      options.queries.map((q) =>
+        searchByQuery(q, mode, candidateLimit, snippetLength, false, options.anchors ?? false),
+      ),
     );
     results = rrfFusion(perQueryResults, 60);
     // Populate scores.hybrid on merged results (mirrors single-query hybrid path)
@@ -1074,7 +1135,14 @@ export async function search(input: string, options: SearchOptions = {}): Promis
       }
     }
   } else {
-    results = await searchByQuery(input, mode, limit, snippetLength, options.rerank ?? false);
+    results = await searchByQuery(
+      input,
+      mode,
+      limit,
+      snippetLength,
+      options.rerank ?? false,
+      options.anchors ?? false,
+    );
   }
 
   results = applyScope(results, options.scope);
@@ -1114,6 +1182,27 @@ export async function search(input: string, options: SearchOptions = {}): Promis
       backlinks: backlinks.get(sr.path) ?? [],
     };
   });
+
+  // Populate previewAnchors when requested (not for related mode — handled above)
+  if (options.anchors) {
+    for (let i = 0; i < final.length; i++) {
+      const raw = results[i];
+      if (!raw) continue;
+      const anchors: MatchAnchor[] = [];
+      if (raw.semanticAnchor) anchors.push(raw.semanticAnchor);
+      if (raw.bm25Anchor) {
+        // Deduplicate: skip BM25 anchor if it points to the same block as semantic
+        if (!raw.semanticAnchor || raw.bm25Anchor.matchText !== raw.semanticAnchor.matchText) {
+          anchors.push(raw.bm25Anchor);
+        }
+      }
+      if (anchors.length > 0) {
+        final[i]!.previewAnchors = anchors;
+        final[i]!.primaryAnchorIndex = 0; // semantic (index 0) is always primary when present
+      }
+    }
+  }
+
   searchCache.set(key, final);
   return final;
 }
@@ -1216,6 +1305,7 @@ async function searchByQuery(
   limit: number,
   snippetLength: number,
   rerank = false,
+  buildAnchors = false,
 ): Promise<RawResult[]> {
   if (rerank && mode !== 'hybrid') {
     process.stderr.write('Reranking is only supported in hybrid mode. Ignoring --rerank.\n');
@@ -1223,7 +1313,7 @@ async function searchByQuery(
   }
 
   if (mode === 'fulltext') {
-    return searchBm25(query, limit, snippetLength);
+    return searchBm25(query, limit, snippetLength, buildAnchors);
   }
 
   if (mode === 'title') {
@@ -1249,7 +1339,7 @@ async function searchByQuery(
   const candidateLimit = Math.max(limit, 20);
   const f32 = await embedQuery(query);
   const [bm25Results, fuzzyResults, vectorResults] = await Promise.all([
-    Promise.resolve(searchBm25(query, candidateLimit, snippetLength)),
+    Promise.resolve(searchBm25(query, candidateLimit, snippetLength, buildAnchors)),
     Promise.resolve(searchFuzzyTitle(query, candidateLimit)),
     f32 ? searchVector(f32, candidateLimit) : Promise.resolve([]),
   ]);
