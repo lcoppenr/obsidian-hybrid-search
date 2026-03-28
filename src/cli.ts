@@ -87,6 +87,7 @@ interface SearchOpts {
   open?: boolean;
   extended?: boolean;
   rerank?: boolean;
+  anchors?: boolean;
 }
 
 interface ReindexOpts {
@@ -424,6 +425,10 @@ program
     '--rerank',
     'Enable cross-encoder re-ranking (downloads ~32MB model on first use, hybrid mode only)',
   )
+  .option(
+    '--anchors',
+    'Include previewAnchors (headingPath, matchText, charStart/charEnd) in JSON output',
+  )
   .action(async (queries: string[], opts: SearchOpts) => {
     const effectiveInput = opts.path ?? queries[0];
     const frontmatterFilters = [...opts.frontmatter, ...opts.prop];
@@ -453,6 +458,7 @@ program
       snippetLength: opts.snippetLength ? parseInt(opts.snippetLength, 10) : undefined,
       notePath: opts.path,
       rerank: opts.rerank ?? false,
+      anchors: opts.anchors ?? false,
       queries: !opts.path && queries.length > 1 ? queries : undefined,
     });
 

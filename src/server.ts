@@ -300,6 +300,15 @@ async function main() {
               description:
                 'Enable cross-encoder re-ranking for higher precision. Downloads ~32MB model on first use (cached). Recommended when result order matters. Only applies to hybrid mode (default). Default: false.',
             },
+            anchors: {
+              type: 'boolean',
+              description:
+                'When true, includes previewAnchors in each result for precise UI navigation. ' +
+                'Each anchor has headingPath, matchText, charStart, charEnd. ' +
+                'Not needed for most MCP use cases — the snippet field is sufficient. ' +
+                'Use when building a UI that renders the note and needs to scroll to the matched region. ' +
+                'Default: false.',
+            },
           },
         },
       },
@@ -400,6 +409,7 @@ async function main() {
           direction: a.direction as 'outgoing' | 'backlinks' | 'both' | undefined,
           snippetLength: a.snippet_length as number | undefined,
           rerank: a.rerank as boolean | undefined,
+          anchors: a.anchors as boolean | undefined,
           notePath,
           queries: allQueries.length > 1 ? allQueries : undefined,
         });
