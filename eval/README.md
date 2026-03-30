@@ -182,15 +182,34 @@ Golden set: `eval/golden-sets/obsidian-help.json` (20 queries)
 nDCG@5=0.682 falls above the "good hybrid" range (0.58–0.65).
 Weak spot: **conceptual queries** (0.352) — paraphrased queries with no keyword overlap with the target file.
 
+## Speed benchmark
+
+`eval/benchmark-speed.ts` measures median CLI query latency across 10 queries × 5 runs for OHS and qmd side-by-side. Models are warmed up before measurement.
+
+```bash
+# OHS only
+npm run eval:benchmark -- --vault fixtures/obsidian-help/en
+
+# OHS vs qmd (requires qmd installed and vault indexed as a collection)
+npm run eval:benchmark -- --vault fixtures/obsidian-help/en --collection obsidian-help
+```
+
+Without `--collection`, only OHS is measured. With `--collection`, qmd is benchmarked alongside and a speedup ratio is printed.
+
+See [COMPARISON.md](COMPARISON.md) for full reproduction instructions including qmd setup.
+
 ## File layout
 
 ```
 eval/
 ├── metrics.ts                  # ndcg(), mrr(), hitAtK(), recallAtK()
 ├── evaluate.ts                 # index vault + run golden set → JSON
+├── evaluate-qmd.ts             # same golden set against qmd CLI
+├── benchmark-speed.ts          # median query latency: OHS vs qmd
 ├── compare.ts                  # read two JSONs → delta table
+├── COMPARISON.md               # how to reproduce the OHS vs qmd comparison
 ├── golden-sets/
-│   ├── obsidian-help.json      # 20 queries against fixtures/obsidian-help/en
+│   ├── obsidian-help.json      # 58 queries against fixtures/obsidian-help/en
 │   └── personal.json           # your own golden set (gitignored)
 └── results/
     └── *.json                  # gitignored, created locally

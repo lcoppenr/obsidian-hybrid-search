@@ -95,24 +95,30 @@ function main(): void {
   console.log('[benchmark] warming up ohs (first query loads DB + model)...');
   measureOhs(QUERIES[0]!, vault);
 
-  console.log('[benchmark] warming up qmd (first query loads LLM)...');
-  measureQmd(QUERIES[0]!, collection);
+  if (collection) {
+    console.log('[benchmark] warming up qmd (first query loads LLM)...');
+    measureQmd(QUERIES[0]!, collection);
+  }
 
   console.log('\n[benchmark] warm runs starting...');
 
   const ohs = benchmarkTool('obsidian-hybrid-search (hybrid, no rerank)', (q) =>
     measureOhs(q, vault),
   );
-  const qmd = benchmarkTool('qmd (LLM expansion + rerank)', (q) => measureQmd(q, collection));
 
   console.log('\n══════════════════════════════════════════════');
   console.log(
     `obsidian-hybrid-search  ${ohs.overall.toFixed(0).padStart(6)} ms  (median over ${QUERIES.length} queries × ${RUNS} runs)`,
   );
-  console.log(
-    `qmd                     ${qmd.overall.toFixed(0).padStart(6)} ms  (median over ${QUERIES.length} queries × ${RUNS} runs)`,
-  );
-  console.log(`Speedup: ${(qmd.overall / ohs.overall).toFixed(1)}×`);
+
+  if (collection) {
+    const qmd = benchmarkTool('qmd (LLM expansion + rerank)', (q) => measureQmd(q, collection));
+    console.log(
+      `qmd                     ${qmd.overall.toFixed(0).padStart(6)} ms  (median over ${QUERIES.length} queries × ${RUNS} runs)`,
+    );
+    console.log(`Speedup: ${(qmd.overall / ohs.overall).toFixed(1)}×`);
+  }
+
   console.log('══════════════════════════════════════════════');
 }
 

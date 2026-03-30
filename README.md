@@ -14,15 +14,17 @@ No external services required. A bundled `@huggingface/transformers` model handl
 
 Evaluated on the [Obsidian Help vault](eval/README.md) (171 notes, 58 queries, local model):
 
-|                | **obsidian-hybrid-search** | [qmd](https://github.com/tobi/qmd) |
-| -------------- | :------------------------: | :--------------------------------: |
-| nDCG@5         |         **0.736**          |               0.659                |
-| MRR            |         **0.771**          |               0.665                |
-| Hit@1          |         **0.690**          |               0.500                |
-| Avg query time |         **571 ms**         |               754 ms               |
-| Model download |        **~117 MB**         |              ~2.2 GB               |
+|                | **OHS** (this project) | [qmd](https://github.com/tobi/qmd) |
+| -------------- | :--------------------: | :--------------------------------: |
+| nDCG@5         |       **0.736**        |               0.659                |
+| MRR            |       **0.771**        |               0.665                |
+| Hit@1          |       **0.690**        |               0.500                |
+| Avg query time |      **571 ms** ¹      |              754 ms ²              |
+| Model download |      **~117 MB**       |              ~2.2 GB               |
 
-obsidian-hybrid-search uses `Xenova/multilingual-e5-small` (no rerank). qmd uses LLM query expansion + reranking. [Full benchmark →](eval/README.md)
+¹ CPU (Apple Silicon), hybrid mode, no rerank. ² GPU (Apple Silicon Metal), LLM query expansion + reranking.
+
+OHS uses `Xenova/multilingual-e5-small`. [How to reproduce →](eval/COMPARISON.md) · [Full benchmark →](eval/README.md)
 
 ## Features
 
