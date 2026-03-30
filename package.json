@@ -53,7 +53,7 @@
     "yaml": "^2.8.3"
   },
   "optionalDependencies": {
-    "@huggingface/transformers": "^3.8.1"
+    "@huggingface/transformers": "^4.0.0"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.4.3",
