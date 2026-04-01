@@ -589,14 +589,43 @@ program
     }
   });
 
+function readRaw(paths: string[]): void {
+  const multi = paths.length > 1;
+  for (const notePath of paths) {
+    const fullPath = path.join(config.vaultPath, notePath);
+    if (multi) {
+      const header = `── ${notePath} `;
+      const line = header + '─'.repeat(Math.max(0, 72 - header.length));
+      console.log(`\n${line}\n`);
+    }
+    if (!existsSync(fullPath)) {
+      process.stderr.write(`Note "${notePath}" not found.\n`);
+      process.exitCode = 1;
+      continue;
+    }
+    const raw = readFileSync(fullPath, 'utf-8');
+    process.stdout.write(raw);
+    if (!raw.endsWith('\n')) process.stdout.write('\n');
+  }
+}
+
 program
   .command('read <paths...>')
   .description('Read note(s) by vault-relative path and print enriched content')
   .option('--snippet-length <n>', 'Max characters of content per note')
   .option('--no-related', 'Skip links and backlinks lookup')
   .option('--json', 'Output as JSON')
+  .option('--raw', 'Output raw file content from vault (with frontmatter, no DB lookup)')
   .action(
-    async (paths: string[], opts: { snippetLength?: string; related: boolean; json?: boolean }) => {
+    async (
+      paths: string[],
+      opts: { snippetLength?: string; related: boolean; json?: boolean; raw?: boolean },
+    ) => {
+      if (opts.raw) {
+        readRaw(paths);
+        return;
+      }
+
       await init();
       const results = readNotes(paths, {
         snippetLength: opts.snippetLength ? parseInt(opts.snippetLength, 10) : undefined,

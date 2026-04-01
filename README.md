@@ -161,7 +161,7 @@ obsidian-hybrid-search "productivity systems" --limit 5 --threshold 0.3
 obsidian-hybrid-search "daily review" --scope notes/periodic/
 obsidian-hybrid-search "daily review" --folder notes/periodic/    # alias for --scope
 
-# Restrict to multiple subfolders (AND)
+# Restrict to multiple subfolders (OR)
 obsidian-hybrid-search "productivity" --scope notes/pkm/ --scope notes/2024/
 
 # Exclude a subfolder
@@ -239,8 +239,11 @@ obsidian-hybrid-search reindex notes/pkm/zettelkasten.md
 # Show indexing status
 obsidian-hybrid-search status
 
-# Read a note by path (outputs raw content, like cat)
+# Read a note by path (outputs body content without frontmatter)
 obsidian-hybrid-search read notes/pkm/zettelkasten.md
+
+# Read raw file from vault (with frontmatter, like cat)
+obsidian-hybrid-search read notes/pkm/zettelkasten.md --raw
 
 # Read multiple notes (separator between each)
 obsidian-hybrid-search read notes/pkm/zettelkasten.md notes/pkm/evergreen-notes.md
