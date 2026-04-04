@@ -1349,7 +1349,13 @@ async function searchByQuery(
   }
 
   if (mode === 'title') {
-    return searchFuzzyTitle(query, limit);
+    // Fetch a larger candidate pool from FTS (BM25 order ≠ adjustedScore order),
+    // then re-sort by adjustedScore and slice. Without this, notes ranked low by
+    // BM25 but with high trigram overlap (e.g. exact title match) would be silently
+    // dropped before scoring. Only done for title mode — hybrid uses rrfFusion which
+    // depends on the original BM25 ordering from searchFuzzyTitle.
+    const candidates = searchFuzzyTitle(query, Math.max(limit * 5, 50));
+    return candidates.sort((a, b) => b.score - a.score).slice(0, limit);
   }
 
   if (mode === 'semantic') {
