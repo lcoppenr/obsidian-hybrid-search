@@ -11,6 +11,8 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      DEPENDENCY_UPDATE_TOKEN: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -30,6 +32,15 @@ jobs:
         id: changes
         run: |
           git diff --quiet package-lock.json || echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Verify automation token is configured
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          if [ -z "$DEPENDENCY_UPDATE_TOKEN" ]; then
+            echo "Missing repository secret DEPENDENCY_UPDATE_TOKEN."
+            echo "Use a PAT or GitHub App token so the PR triggers pull_request workflows."
+            exit 1
+          fi
 
       - name: Bump patch version
         if: steps.changes.outputs.changed == 'true'
@@ -51,7 +62,8 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
+          branch-token: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
           commit-message: 'chore: update dependencies'
           branch: chore/update-deps
           title: 'chore: weekly dependency update'
@@ -65,6 +77,6 @@ jobs:
 
       - name: Enable auto-merge
         if: steps.pr.outputs.pull-request-number
-        run: gh pr merge --auto --squash ${{ steps.pr.outputs.pull-request-number }}
+        run: gh pr merge --auto --squash --delete-branch ${{ steps.pr.outputs.pull-request-number }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
