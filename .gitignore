@@ -8,10 +8,11 @@ coverage/
 *.db-wal
 .env
 .mcp.json
-.obsidian-hybrid-search.db
+.obsidian-hybrid-search.db*
 .claude/settings.local.json
 .vscode/
 .claude/
+.codex/
 reports/
 opencode.json
 .zed/
