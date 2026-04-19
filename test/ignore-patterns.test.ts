@@ -35,9 +35,10 @@ process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 // Use default ignore patterns (same as production default in config.ts)
 delete process.env.OBSIDIAN_IGNORE_PATTERNS;
 
-const { openDb, initVecTable, upsertNote, getDb, getPathsToRemoveForIgnoreChange } =
+const { openDb, initVecTable, upsertNote, getDb, getPathsToRemoveForIgnoreChange, deleteNote } =
   await import('../src/db.js');
 const { search, bumpIndexVersion } = await import('../src/searcher.js');
+const { isIgnored } = await import('../src/ignore.js');
 
 const DIM = 4;
 let _seq = 0;
@@ -251,5 +252,134 @@ describe('I4 – ignore pattern matching does not hit false positives', () => {
     // This is a concrete false-positive risk
     assert.ok(!matchesAnyPattern('base/note-templates.md', IGNORED));
     assert.ok(!matchesAnyPattern('sources/templates-overview.md', IGNORED));
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// A – Pattern added: previously-indexed note is removed on server restart
+//
+//  Covers the lifecycle:
+//    1. Note is in the index (indexed while the path was allowed)
+//    2. User adds a new ignore pattern that covers the note's folder
+//    3. Server restarts → cleanupStaleNotes runs
+//    4. Note must be removed from DB and disappear from search
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('A – pattern added: previously-indexed note is removed from search', () => {
+  const NOTE_PATH = 'base/categories/knowledge base.md';
+  const EXTENDED_PATTERNS = [...DEFAULT_PATTERNS, 'base/categories/**'];
+
+  afterAll(() => {
+    // Restore env so subsequent test suites see the default ignore patterns
+    delete process.env.OBSIDIAN_IGNORE_PATTERNS;
+  });
+
+  it('A1 – getPathsToRemoveForIgnoreChange returns the path covered by the new pattern', () => {
+    // Bring DB to a known baseline: DEFAULT_PATTERNS stored, note absent.
+    deleteNote(NOTE_PATH);
+    process.env.OBSIDIAN_IGNORE_PATTERNS = DEFAULT_PATTERNS.join(',');
+    getPathsToRemoveForIgnoreChange(DEFAULT_PATTERNS); // stores DEFAULT_PATTERNS in settings
+
+    // Insert the note to simulate it having been indexed before the pattern change.
+    insertNote(NOTE_PATH, 'knowledge base', 'knowledge base removal candidate xqz1');
+    bumpIndexVersion();
+
+    // Simulate the user adding 'base/categories/**' to OBSIDIAN_IGNORE_PATTERNS and
+    // restarting the server.  In production, config.ignorePatterns and the argument to
+    // getPathsToRemoveForIgnoreChange are always in sync because both come from the same
+    // env var — replicate that here so isIgnored() inside the function sees the new patterns.
+    process.env.OBSIDIAN_IGNORE_PATTERNS = EXTENDED_PATTERNS.join(',');
+    const toRemove = getPathsToRemoveForIgnoreChange(EXTENDED_PATTERNS);
+
+    assert.ok(
+      toRemove.includes(NOTE_PATH),
+      `A1 FAILED: ${NOTE_PATH} was not returned for removal when 'base/categories/**' was added to patterns`,
+    );
+  });
+
+  it('A2 – note is unreachable in fulltext search after the cleanupStaleNotes sweep', async () => {
+    // Reset to a clean baseline (A1 may have left EXTENDED_PATTERNS stored and the note in DB).
+    deleteNote(NOTE_PATH);
+    process.env.OBSIDIAN_IGNORE_PATTERNS = DEFAULT_PATTERNS.join(',');
+    getPathsToRemoveForIgnoreChange(DEFAULT_PATTERNS); // reset stored patterns to DEFAULT
+
+    // Re-insert the note with the same unique phrase.
+    insertNote(NOTE_PATH, 'knowledge base', 'knowledge base removal candidate xqz1');
+    bumpIndexVersion();
+
+    // Precondition: note is findable before the pattern change.
+    const before = await search('knowledge base removal candidate xqz1', { mode: 'fulltext' });
+    assert.ok(
+      before.some((r) => r.path === NOTE_PATH),
+      'A2 precondition FAILED: note must be findable before the pattern change',
+    );
+
+    // Simulate server restart with the new patterns (user changed env, server restarted).
+    process.env.OBSIDIAN_IGNORE_PATTERNS = EXTENDED_PATTERNS.join(',');
+    const toRemove = getPathsToRemoveForIgnoreChange(EXTENDED_PATTERNS);
+
+    // Simulate cleanupStaleNotes: delete every path returned.
+    for (const p of toRemove) deleteNote(p);
+    bumpIndexVersion();
+
+    const after = await search('knowledge base removal candidate xqz1', { mode: 'fulltext' });
+    assert.ok(
+      !after.some((r) => r.path === NOTE_PATH),
+      'A2 FAILED: note still appears in fulltext search after being removed by pattern change',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// B – Pattern removed: previously-excluded path is picked up on next reindex
+//
+//  Covers the lifecycle:
+//    1. Note was never indexed because its folder matched an ignore pattern
+//    2. User removes the pattern from OBSIDIAN_IGNORE_PATTERNS
+//    3. Server restarts → scanVault() now includes the file → indexFile() indexes it
+//    4. Note must be findable in search
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('B – pattern removed: previously-excluded path is picked up on next reindex', () => {
+  const NOTE_PATH = 'base/categories/knowledge base.md';
+  const EXTENDED_PATTERNS = [...DEFAULT_PATTERNS, 'base/categories/**'];
+
+  afterAll(() => {
+    delete process.env.OBSIDIAN_IGNORE_PATTERNS;
+  });
+
+  it('B1 – isIgnored correctly toggles when the exclusion pattern is added and removed', () => {
+    // With the exclusion pattern active the file must be skipped by scanVault.
+    process.env.OBSIDIAN_IGNORE_PATTERNS = EXTENDED_PATTERNS.join(',');
+    assert.ok(
+      isIgnored(NOTE_PATH),
+      'B1 precondition FAILED: path should be ignored while base/categories/** is active',
+    );
+
+    // After the user removes 'base/categories/**' the file must be visible to the scanner.
+    process.env.OBSIDIAN_IGNORE_PATTERNS = DEFAULT_PATTERNS.join(',');
+    assert.ok(
+      !isIgnored(NOTE_PATH),
+      `B1 FAILED: ${NOTE_PATH} still reported as ignored after 'base/categories/**' was removed from patterns`,
+    );
+  });
+
+  it('B2 – note indexed after pattern removal is findable via fulltext search', async () => {
+    // Pattern is now absent: isIgnored returns false, so the next indexVaultSync will pick
+    // up the file.  We call insertNote directly to simulate what indexFile does once the
+    // scanner reaches the file — the embedder is an external dependency orthogonal to the
+    // ignore-pattern lifecycle being tested here.
+    process.env.OBSIDIAN_IGNORE_PATTERNS = DEFAULT_PATTERNS.join(',');
+
+    insertNote(NOTE_PATH, 'knowledge base', 'knowledge base reindex after pattern removal xqz2');
+    bumpIndexVersion();
+
+    const results = await search('knowledge base reindex after pattern removal xqz2', {
+      mode: 'fulltext',
+    });
+    assert.ok(
+      results.some((r) => r.path === NOTE_PATH),
+      'B2 FAILED: note not findable after it was indexed following pattern removal',
+    );
   });
 });
