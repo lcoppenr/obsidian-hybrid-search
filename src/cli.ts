@@ -8,6 +8,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import pc from 'picocolors';
+import {
+  formatSnippetForTable,
+  getSearchTableLayout,
+  truncatePathMiddle,
+  wrapPathForTable,
+} from './cli-table-layout.js';
 import { config } from './config.js';
 import {
   applyDbConfigDefaults,
@@ -292,25 +298,18 @@ function printSearchTable(
   filterOnlyMode: boolean,
 ): void {
   const hasSnippets = results.some((r) => (r.snippet ?? '').trim().length > 0);
+  const layout = getSearchTableLayout({
+    extended,
+    filterOnlyMode,
+    hasSnippets,
+    terminalColumns: process.stdout.columns,
+  });
 
   const heads = [];
-  const colWidths: number[] = [];
   if (!filterOnlyMode) {
     heads.push('SCORE');
-    colWidths.push(7);
   }
   heads.push('PATH');
-  if (filterOnlyMode) {
-    colWidths.push(70);
-  } else if (extended && hasSnippets) {
-    colWidths.push(38, 20, 47);
-  } else if (extended) {
-    colWidths.push(50, 25);
-  } else if (hasSnippets) {
-    colWidths.push(45, 60);
-  } else {
-    colWidths.push(60);
-  }
 
   if (extended && hasSnippets) heads.push('TAGS/ALIASES', 'SNIPPET');
   else if (extended) heads.push('TAGS/ALIASES');
@@ -318,7 +317,7 @@ function printSearchTable(
 
   const table = new Table({
     head: heads,
-    colWidths,
+    colWidths: layout.colWidths,
     wordWrap: true,
     style: { head: [] },
   });
@@ -326,13 +325,20 @@ function printSearchTable(
   for (const r of results) {
     const row = [];
     if (!filterOnlyMode) row.push(colorScore(r.score));
-    row.push(r.path);
+    row.push(
+      hasSnippets
+        ? wrapPathForTable(r.path, layout.pathColumnWidth - 2)
+        : truncatePathMiddle(r.path, layout.pathColumnWidth - 2),
+    );
     if (extended && hasSnippets) {
-      row.push(formatMeta(r), r.snippet ?? '');
+      row.push(
+        formatMeta(r),
+        formatSnippetForTable(r.snippet ?? '', (layout.snippetColumnWidth ?? 47) - 2),
+      );
     } else if (extended) {
       row.push(formatMeta(r));
     } else if (hasSnippets) {
-      row.push(r.snippet ?? '');
+      row.push(formatSnippetForTable(r.snippet ?? '', (layout.snippetColumnWidth ?? 60) - 2));
     }
     table.push(row);
   }
