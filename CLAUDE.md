@@ -188,6 +188,7 @@ The local model (`Xenova/multilingual-e5-small`) downloads ~117 MB on first run 
 | Variable                   | Required      | Default                                  | Description                                                                                |
 | -------------------------- | ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `OBSIDIAN_VAULT_PATH`      | Yes           | —                                        | Absolute path to Obsidian vault root                                                       |
+| `OBSIDIAN_PREFIX`          | No            | `""`                                     | MCP tool name prefix for multi-vault setups, e.g. `work_` → `work_search`, `work_read`     |
 | `OPENAI_API_KEY`           | For embedding | —                                        | Also used for OpenRouter                                                                   |
 | `OPENAI_BASE_URL`          | No            | `https://api.openai.com/v1`              | Override for Ollama/OpenRouter                                                             |
 | `OPENAI_EMBEDDING_MODEL`   | No            | `text-embedding-3-small`                 | Any OpenAI-compatible embedding model                                                      |

@@ -338,8 +338,7 @@ Uses the built-in `Xenova/multilingual-e5-small` model — works fully offline, 
       "command": "npx",
       "args": ["-y", "-p", "obsidian-hybrid-search@latest", "obsidian-hybrid-search-mcp"],
       "env": {
-        "OBSIDIAN_VAULT_PATH": "/path/to/your/vault",
-        "OBSIDIAN_PREFIX": ""
+        "OBSIDIAN_VAULT_PATH": "/path/to/your/vault"
       }
     }
   }
