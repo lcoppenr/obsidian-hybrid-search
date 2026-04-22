@@ -224,7 +224,7 @@ obsidian-hybrid-search "spaced repetition" --json
 obsidian-hybrid-search --frontmatter id:OHS-4 --only-paths
 ohs read ${(f)"$(ohs search --frontmatter status:todo --only-paths)"}  # zsh: read all matching notes
 
-# Output absolute filesystem paths — Cmd+click works in iTerm2 regardless of CWD
+# Output absolute filesystem paths
 obsidian-hybrid-search "zettelkasten" --only-absolute-paths
 
 # Open results in Obsidian (each in a new tab)
