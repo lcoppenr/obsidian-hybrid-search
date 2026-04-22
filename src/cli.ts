@@ -87,6 +87,7 @@ interface SearchOpts {
   open?: boolean;
   extended?: boolean;
   onlyPaths?: boolean;
+  onlyAbsolutePaths?: boolean;
   rerank?: boolean;
   anchors?: boolean;
 }
@@ -424,6 +425,10 @@ program
   .option('--snippet-length <n>', 'Max snippet length in characters (default: 300)')
   .option('--json', 'Output as JSON')
   .option('--only-paths', 'Output note paths one per line (for use in pipes)')
+  .option(
+    '--only-absolute-paths',
+    'Output absolute filesystem paths one per line (vault-relative paths prefixed with vault root; useful for Cmd+click in terminal emulators)',
+  )
   .option('--open', 'Open results in Obsidian')
   .option('--extended', 'Show tags and aliases column in output table')
   .option(
@@ -475,6 +480,13 @@ program
     if (opts.onlyPaths) {
       for (const r of results) {
         console.log(r.path);
+      }
+      return;
+    }
+
+    if (opts.onlyAbsolutePaths) {
+      for (const r of results) {
+        console.log(path.join(config.vaultPath, r.path));
       }
       return;
     }
