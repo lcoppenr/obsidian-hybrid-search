@@ -47,7 +47,7 @@ function* walkDir(dir: string): Generator<string> {
   }
 }
 
-function scanVault(): string[] {
+export function scanVault(): string[] {
   const files: string[] = [];
   for (const fullPath of walkDir(config.vaultPath)) {
     const rel = path.relative(config.vaultPath, fullPath);
@@ -200,7 +200,7 @@ async function resolveAllLinks(): Promise<void> {
  * - notes whose files were deleted from disk
  * Called on server startup and during full reindex.
  */
-function cleanupStaleNotes(fsPaths?: Set<string>): void {
+export function cleanupStaleNotes(fsPaths?: Set<string>): void {
   let deleted = 0;
 
   // Newly ignored notes: file still exists on disk, keep their link entries
@@ -230,7 +230,7 @@ function cleanupStaleNotes(fsPaths?: Set<string>): void {
   if (deleted > 0) bumpIndexVersion();
 }
 
-function formatDuration(seconds: number): string {
+export function formatDuration(seconds: number): string {
   const s = Math.round(seconds);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -242,7 +242,7 @@ const PROGRESS_BAR_WIDTH = 20;
 // Number of completed batches to wait before showing ETA (lets the rate stabilise)
 const ETA_WARMUP_BATCHES = 3;
 
-function renderProgressLine(processed: number, total: number, etaStr: string): string {
+export function renderProgressLine(processed: number, total: number, etaStr: string): string {
   const pct = total > 0 ? processed / total : 1;
   const filled = Math.round(pct * PROGRESS_BAR_WIDTH);
   const bar = '█'.repeat(filled) + '░'.repeat(PROGRESS_BAR_WIDTH - filled);
@@ -333,6 +333,14 @@ const _indexQueue: string[] = [];
 let _isIndexing = false;
 let _totalExpected = 0;
 let _processedCount = 0;
+
+/** @internal Reset module-level queue state for test isolation. */
+export function resetIndexingState(): void {
+  _indexQueue.length = 0;
+  _isIndexing = false;
+  _totalExpected = 0;
+  _processedCount = 0;
+}
 
 /**
  * Returns the current background-indexing progress.

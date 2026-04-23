@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, it, vi } from 'vitest';
 
 // ─── Vault setup (before any imports that read OBSIDIAN_VAULT_PATH) ──────────
 
@@ -13,6 +13,7 @@ process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 
 const { openDb, initVecTable, upsertNote, upsertLinks } = await import('../src/db.js');
 const { search, bumpIndexVersion } = await import('../src/searcher.js');
+const { reranker } = await import('../src/reranker.js');
 
 const fakeEmbedding = new Float32Array([0.1, 0.2, 0.3, 0.4]);
 
@@ -1121,5 +1122,35 @@ describe('anchors: true — hybrid deduplication', () => {
     const anchors = results[0].previewAnchors;
     assert.ok(anchors.length >= 1 && anchors.length <= 2);
     assert.equal(results[0].primaryAnchorIndex, 0);
+  });
+});
+
+// ─── rerank paths ────────────────────────────────────────────────────────────
+
+describe('rerank option', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('ignores rerank when mode is not hybrid', async () => {
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const results = await search('zettelkasten', {
+      mode: 'fulltext',
+      limit: 3,
+      rerank: true,
+    });
+    assert.ok(results.length > 0);
+    assert.ok(
+      stderrSpy.mock.calls.some((c) => c[0]?.toString().includes('Reranking is only supported')),
+    );
+    stderrSpy.mockRestore();
+  });
+
+  it('applies rerank in hybrid mode', async () => {
+    vi.spyOn(reranker, 'scoreAll').mockResolvedValue([0.9, 0.5, 0.1]);
+    const results = await search('zettelkasten', {
+      mode: 'hybrid',
+      limit: 3,
+      rerank: true,
+    });
+    assert.ok(results.length > 0);
   });
 });

@@ -50,6 +50,8 @@ const {
   applyDbConfigDefaults,
   filterNotePathsByTag,
   filterNotePathsByFrontmatter,
+  getStoredModel,
+  wipeDatabaseFiles,
 } = await import('../src/db.js');
 const { searchBm25, searchFuzzyTitle, search } = await import('../src/searcher.js');
 const { isIgnored } = await import('../src/ignore.js');
@@ -1084,5 +1086,102 @@ describe('chunks char_start / char_end columns', () => {
     assert.ok(row, 'chunk row not found');
     assert.equal(row.char_start, null);
     assert.equal(row.char_end, null);
+  });
+});
+
+// ─── getStoredModel ──────────────────────────────────────────────────────────
+
+describe('getStoredModel', () => {
+  it('returns null on a fresh DB', () => {
+    wipeDatabaseFiles();
+    openDb();
+    const model = getStoredModel();
+    assert.equal(model, null);
+  });
+
+  it('returns the stored model after checkModelChanged stores it', () => {
+    wipeDatabaseFiles();
+    openDb();
+    checkModelChanged('test-model-a');
+    const model = getStoredModel();
+    assert.equal(model, 'test-model-a');
+  });
+});
+
+// ─── getPathsToRemoveForIgnoreChange ─────────────────────────────────────────
+
+describe('getPathsToRemoveForIgnoreChange', () => {
+  it('returns empty array when patterns unchanged', () => {
+    const first = getPathsToRemoveForIgnoreChange(['.obsidian/**', 'templates/**']);
+    const second = getPathsToRemoveForIgnoreChange(['.obsidian/**', 'templates/**']);
+    assert.deepEqual(second, []);
+    // Use first to silence unused warning and validate initial store
+    assert.ok(Array.isArray(first));
+  });
+
+  it('returns paths that match new ignore patterns', () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    // Insert a note that would be ignored by a pattern
+    upsertNote({
+      path: 'templates/starter.md',
+      title: 'Starter',
+      tags: [],
+      content: 'Template content',
+      mtime: Date.now(),
+      hash: 'h-template',
+      chunks: [{ text: 'Template content', embedding: fakeEmbedding }],
+    });
+    const paths = getPathsToRemoveForIgnoreChange(['.obsidian/**', 'templates/**', 'archive/**']);
+    assert.ok(paths.includes('templates/starter.md'));
+  });
+});
+
+// ─── cleanupNfcPaths (via wipe + re-open) ────────────────────────────────────
+
+describe('cleanupNfcPaths migration', () => {
+  it('removes notes with NFC-encoded paths on openDb', () => {
+    // Manually insert a note with an NFC path (macOS HFS+ would not do this,
+    // but other platforms might). openDb calls cleanupNfcPaths internally.
+    const nfcPath = 'caf\u00e9.md'; // NFC é
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(nfcPath, 'Cafe', '[]', 'Content.', '', 1, 'h1');
+
+    const before = getNoteByPath(nfcPath);
+    assert.ok(before, 'NFC note should exist before reopen');
+
+    // Re-opening the DB triggers cleanupNfcPaths
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const after = getNoteByPath(nfcPath);
+    assert.ok(!after, 'NFC note should be removed after cleanupNfcPaths');
+  });
+});
+
+// ─── restoreIgnorePatterns ───────────────────────────────────────────────────
+
+describe('restoreIgnorePatterns', () => {
+  it('restores ignore patterns from DB settings when env var is absent', () => {
+    const saved = process.env.OBSIDIAN_IGNORE_PATTERNS;
+    delete process.env.OBSIDIAN_IGNORE_PATTERNS;
+
+    // Store patterns in DB, then force a re-open so restoreIgnorePatterns runs
+    const db = getDb();
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ignore_patterns', ?)").run(
+      JSON.stringify(['custom/**', 'drafts/**']),
+    );
+    db.close();
+    openDb();
+
+    assert.equal(process.env.OBSIDIAN_IGNORE_PATTERNS, 'custom/**,drafts/**');
+
+    // Cleanup
+    if (saved !== undefined) process.env.OBSIDIAN_IGNORE_PATTERNS = saved;
+    else delete process.env.OBSIDIAN_IGNORE_PATTERNS;
   });
 });

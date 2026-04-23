@@ -13,9 +13,9 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**'],
       thresholds: {
-        lines: 60,
-        functions: 65,
-        branches: 47,
+        lines: 71,
+        functions: 77,
+        branches: 55,
       },
     },
   },

@@ -179,6 +179,38 @@ describe('embed() — retryable failure (429)', () => {
   });
 });
 
+describe('embed() — batch failure falls back to per-item retry', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('retries each text individually when batch of 2 fails', async () => {
+    const fakeEmbedding = new Array(384).fill(0.1);
+    const batchSizes: number[] = [];
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, opts: { body: string }) => {
+        const body = JSON.parse(opts.body) as { input: string[] };
+        batchSizes.push(body.input.length);
+        if (body.input.length > 1) {
+          return { ok: false, status: 500, text: () => 'server error' };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+        };
+      }),
+    );
+
+    const result = await embed(['first text', 'second text'], 'document');
+    assert.equal(result.length, 2);
+    assert.ok(result[0] instanceof Float32Array);
+    assert.ok(result[1] instanceof Float32Array);
+    // First call is batch of 2, then two individual calls
+    assert.deepEqual(batchSizes, [2, 1, 1]);
+  });
+});
+
 describe('embed() — Ollama semaphore serializes concurrent calls', () => {
   const fakeEmbedding = new Array(384).fill(0.1);
 

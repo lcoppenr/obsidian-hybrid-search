@@ -14,6 +14,7 @@ coverage/
 .claude/
 .codex/
 .pi/
+.pi-lens/
 reports/
 opencode.json
 .zed/

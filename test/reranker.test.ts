@@ -129,3 +129,21 @@ describe('CrossEncoderReranker.ensureLoaded deduplication', () => {
     assert.strictEqual(loadCount, 1, 'model should be loaded exactly once');
   });
 });
+
+describe('CrossEncoderReranker.ensureLoaded failure', () => {
+  it('returns zeros when model load fails', async () => {
+    const r = new CrossEncoderReranker('mock-model');
+    (r as unknown as Record<string, unknown>)['_loadModel'] = async () => {
+      throw new Error('model load failed');
+    };
+
+    const candidates = [
+      { title: 'A', chunkText: 'x', snippet: '' },
+      { title: 'B', chunkText: 'y', snippet: '' },
+    ];
+    const scores = await r.scoreAll('q', candidates);
+    assert.strictEqual(scores.length, 2);
+    assert.strictEqual(scores[0], 0);
+    assert.strictEqual(scores[1], 0);
+  });
+});
