@@ -270,6 +270,50 @@ function getLocalPrefix(type: 'query' | 'document'): string {
   return '';
 }
 
+const OLLAMA_MAX_CONCURRENCY = 1;
+
+let activeOllamaRequests = 0;
+const ollamaWaitQueue: Array<() => void> = [];
+
+function acquireOllamaSlot(): Promise<() => void> {
+  return new Promise((resolveRelease) => {
+    const tryAcquire = () => {
+      if (activeOllamaRequests < OLLAMA_MAX_CONCURRENCY) {
+        activeOllamaRequests++;
+        resolveRelease(() => {
+          activeOllamaRequests--;
+          const next = ollamaWaitQueue.shift();
+          if (next) next();
+        });
+      } else {
+        ollamaWaitQueue.push(tryAcquire);
+      }
+    };
+    tryAcquire();
+  });
+}
+
+/** Reset semaphore state — for tests only */
+export function clearOllamaSemaphore(): void {
+  activeOllamaRequests = 0;
+  ollamaWaitQueue.length = 0;
+}
+
+async function embedViaApi(
+  texts: string[],
+  type: 'query' | 'document',
+): Promise<(Float32Array | null)[]> {
+  if (isOllamaEndpoint() && type === 'document') {
+    const release = await acquireOllamaSlot();
+    try {
+      return await embedViaApiRaw(texts, type);
+    } finally {
+      release();
+    }
+  }
+  return embedViaApiRaw(texts, type);
+}
+
 export async function embed(
   texts: string[],
   type: 'query' | 'document' = 'document',
@@ -280,7 +324,7 @@ export async function embed(
   return embedLocal(texts, type);
 }
 
-async function embedViaApi(
+async function embedViaApiRaw(
   texts: string[],
   type: 'query' | 'document',
 ): Promise<(Float32Array | null)[]> {

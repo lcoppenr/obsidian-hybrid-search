@@ -369,3 +369,12 @@ describe('parseAliasField', () => {
     assert.deepEqual(parseAliasField({}), []);
   });
 });
+
+describe('queue shape after background indexing start', () => {
+  it('reports zero queued files when no vault files exist', () => {
+    const status = getIndexingStatus();
+    assert.equal(status.queued, 0);
+    assert.equal(status.isRunning, false);
+    assert.equal(status.processed, 0);
+  });
+});

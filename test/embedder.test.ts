@@ -16,7 +16,7 @@ afterAll(() => {
   delete process.env.OPENAI_BASE_URL;
 });
 
-const { embed, LOCAL_MODEL } = await import('../src/embedder.js');
+const { embed, LOCAL_MODEL, clearOllamaSemaphore } = await import('../src/embedder.js');
 
 describe('LOCAL_MODEL constant', () => {
   it('is Xenova/multilingual-e5-small', () => {
@@ -176,5 +176,81 @@ describe('embed() — retryable failure (429)', () => {
     vi.useRealTimers();
 
     assert.equal(result[0], null, 'should return null after all retries exhausted');
+  });
+});
+
+describe('embed() — Ollama semaphore serializes concurrent calls', () => {
+  const fakeEmbedding = new Array(384).fill(0.1);
+
+  beforeEach(() => {
+    process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
+    clearOllamaSemaphore();
+  });
+
+  afterEach(() => {
+    delete process.env.OPENAI_BASE_URL;
+    vi.restoreAllMocks();
+  });
+
+  it('serializes document embeddings to one in-flight request', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        return new Promise<{ ok: boolean; status: number; json: () => unknown }>((resolve) => {
+          setTimeout(() => {
+            inFlight--;
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+            });
+          }, 50);
+        });
+      }),
+    );
+
+    const p1 = embed(['first'], 'document');
+    const p2 = embed(['second'], 'document');
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    assert.ok(r1[0] instanceof Float32Array, 'first request should succeed');
+    assert.ok(r2[0] instanceof Float32Array, 'second request should succeed');
+    assert.equal(maxInFlight, 1, 'only one request should ever be in flight');
+  });
+
+  it('does NOT serialize query embeddings', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(() => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        return new Promise<{ ok: boolean; status: number; json: () => unknown }>((resolve) => {
+          setTimeout(() => {
+            inFlight--;
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+            });
+          }, 50);
+        });
+      }),
+    );
+
+    const p1 = embed(['first query'], 'query');
+    const p2 = embed(['second query'], 'query');
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    assert.ok(r1[0] instanceof Float32Array);
+    assert.ok(r2[0] instanceof Float32Array);
+    assert.equal(maxInFlight, 2, 'query requests should run in parallel');
   });
 });

@@ -442,8 +442,13 @@ export function startWatcher(contextLength: number): void {
         if (existing) clearTimeout(existing);
         const timer = setTimeout(() => {
           fileDelays.delete(filePath);
-          indexFile(filePath, contextLength).catch((err) => {
-            console.warn('[watcher] error indexing', filePath, err);
+          const normalizedPath = path.normalize(filePath).normalize('NFD');
+          if (!_indexQueue.includes(normalizedPath)) {
+            _indexQueue.push(normalizedPath);
+            _totalExpected++;
+          }
+          processQueue(contextLength).catch((err) => {
+            console.warn('[watcher] queue processing error:', err);
           });
         }, config.debounce);
         fileDelays.set(filePath, timer);
