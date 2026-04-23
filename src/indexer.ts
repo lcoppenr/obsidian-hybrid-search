@@ -30,7 +30,7 @@ function* walkDir(dir: string): Generator<string> {
     entries = readdirSync(dir, {
       withFileTypes: true,
       encoding: 'utf-8',
-    }) as unknown as typeof entries;
+    });
   } catch {
     return;
   }
