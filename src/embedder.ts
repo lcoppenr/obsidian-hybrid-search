@@ -198,6 +198,7 @@ async function getLocalPipeline() {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- optional dependency, may not be installed
     let hf: any;
     try {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       hf = await import('@huggingface/transformers');
     } catch {
       throw new Error(

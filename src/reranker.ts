@@ -94,14 +94,16 @@ export class CrossEncoderReranker {
     // 1. Does not pass text_pair to the tokenizer, so pairs are never encoded together.
     // 2. Always applies softmax — useless for BGE reranker (1 output neuron → always 1.0).
     // Instead, load tokenizer + model directly and return raw logits as relevance scores.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const { AutoTokenizer, AutoModelForSequenceClassification, env } =
       await import('@huggingface/transformers');
     // Redirect cache to ~/.cache/huggingface so models survive npm install / node_modules wipes.
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
     env.cacheDir = path.join(os.homedir(), '.cache', 'huggingface');
     const [tokenizer, model] = await Promise.all([
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unnecessary-type-assertion -- no types
       (AutoTokenizer as any).from_pretrained(this.modelName) as Promise<unknown>,
-      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any -- no types
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-explicit-any, @typescript-eslint/no-unnecessary-type-assertion -- no types
       (AutoModelForSequenceClassification as any).from_pretrained(this.modelName, {
         // dtype:'int8' loads model_int8.onnx (~32MB vs ~571MB fp32/fp16).
         // device:'cpu' is required — CoreML/CUDA (device:'auto') do not support

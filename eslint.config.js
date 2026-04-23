@@ -45,6 +45,12 @@ export default tseslint.config(
     },
   },
   {
+    files: ['src/embedder.ts', 'src/reranker.ts'],
+    linterOptions: {
+      reportUnusedDisableDirectives: false,
+    },
+  },
+  {
     ignores: ['dist/', 'node_modules/', 'eslint.config.js'],
   },
 );
