@@ -16,6 +16,7 @@ coverage/
 .pi/
 .pi-lens/
 .a5c/
+.forge/
 reports/
 opencode.json
 .zed/
