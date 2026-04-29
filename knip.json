@@ -1,6 +1,7 @@
 {
   "entry": ["src/**/*.ts", "eval/**/*.ts"],
   "project": ["src/**/*.ts", "eval/**/*.ts"],
+  "ignoreDependencies": ["ajv"],
   "ignoreIssues": {
     "src/searcher.ts": ["types"]
   }
