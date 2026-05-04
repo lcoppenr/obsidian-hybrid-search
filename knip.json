@@ -1,13 +1,7 @@
 {
   "entry": ["src/**/*.ts", "eval/**/*.ts"],
   "project": ["src/**/*.ts", "eval/**/*.ts"],
-  "ignoreDependencies": [
-    "ajv",
-    "onnxruntime-node",
-    "eslint-plugin-import",
-    "@eslint/js",
-    "@vitest/coverage-v8"
-  ],
+  "ignoreDependencies": ["onnxruntime-node", "eslint-plugin-import", "@eslint/js"],
   "ignoreIssues": {
     "src/searcher.ts": ["types"]
   }
