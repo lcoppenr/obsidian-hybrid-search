@@ -462,22 +462,38 @@ export function startWatcher(contextLength: number): void {
         fileDelays.set(filePath, timer);
       };
 
-      watcher.on('add', handleFileChange);
-      watcher.on('change', handleFileChange);
-      watcher.on('unlink', (filePath: string) => {
+      const safeHandleFileChange = (filePath: string) => {
+        try {
+          handleFileChange(filePath);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[watcher] file change error for ${filePath}: ${msg}`);
+        }
+      };
+
+      const safeHandleUnlink = (filePath: string) => {
         if (pendingUnlinks.has(filePath)) return;
         pendingUnlinks.add(filePath);
-
-        const rel = path.relative(config.vaultPath, filePath).normalize('NFD');
-        const existing = fileDelays.get(filePath);
-        if (existing) {
-          clearTimeout(existing);
-          fileDelays.delete(filePath);
+        try {
+          const rel = path.relative(config.vaultPath, filePath).normalize('NFD');
+          const existing = fileDelays.get(filePath);
+          if (existing) {
+            clearTimeout(existing);
+            fileDelays.delete(filePath);
+          }
+          deleteNote(rel);
+          bumpIndexVersion();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[watcher] unlink error for ${filePath}: ${msg}`);
+        } finally {
+          pendingUnlinks.delete(filePath);
         }
-        deleteNote(rel);
-        bumpIndexVersion();
-        pendingUnlinks.delete(filePath);
-      });
+      };
+
+      watcher.on('add', safeHandleFileChange);
+      watcher.on('change', safeHandleFileChange);
+      watcher.on('unlink', safeHandleUnlink);
     })
     .catch((err) => {
       console.warn('[watcher] chokidar load error:', err);
