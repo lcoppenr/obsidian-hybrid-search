@@ -737,6 +737,14 @@ function insertChunks(
  * keepLinks=true: preserve link entries (file still exists on disk, just no longer indexed)
  * keepLinks=false (default): also remove all links — use when file is deleted from disk
  */
+// Explicit cleanup of all child tables — defensive against schema drift
+// where older DBs may lack ON DELETE CASCADE
+function deleteChildRows(db: DB, noteId: number): void {
+  db.prepare('DELETE FROM note_aliases WHERE note_id = ?').run(noteId);
+  db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(noteId);
+  db.prepare('DELETE FROM note_frontmatter_fields WHERE note_id = ?').run(noteId);
+}
+
 export function deleteNote(notePath: string, keepLinks = false): void {
   const db = getDb();
   const note = db.prepare('SELECT id FROM notes WHERE path = ?').get(notePath) as
@@ -744,6 +752,7 @@ export function deleteNote(notePath: string, keepLinks = false): void {
     | undefined;
   if (!note) return;
 
+  deleteChildRows(db, note.id);
   deleteVecChunksForNote(db, note.id);
   db.prepare('DELETE FROM chunks WHERE note_id = ?').run(note.id);
 

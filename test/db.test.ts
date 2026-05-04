@@ -610,6 +610,62 @@ describe('deleteNote semantics', () => {
       'linker.md should not appear in BM25 results after delete',
     );
   });
+
+  it('deleteNote removes note and all child rows without throwing', () => {
+    // ISOLATION: wipe DB so previous tests don't affect this one
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    upsertNote({
+      path: 'ohs162-full-note.md',
+      title: 'OHS162 Full Note',
+      tags: ['ohs162-tag1', 'ohs162-tag2'],
+      aliases: ['OHS162 Alias One'],
+      content: 'Content with [[other.md]] link.',
+      frontmatter: { status: 'ohs162-active' },
+      mtime: Date.now(),
+      hash: 'ohs162-full-hash',
+      chunks: [{ text: 'ohs162 chunk text', embedding: fakeEmbedding }],
+    });
+    upsertLinks('ohs162-full-note.md', ['other.md']);
+
+    assert.doesNotThrow(() => deleteNote('ohs162-full-note.md', false));
+
+    assert.ok(!getNoteByPath('ohs162-full-note.md'), 'note should be deleted');
+
+    const db = getDb();
+    const aliasCount = db
+      .prepare('SELECT COUNT(*) as c FROM note_aliases WHERE alias = ?')
+      .get('OHS162 Alias One') as { c: number };
+    assert.equal(aliasCount.c, 0, 'aliases should be deleted');
+
+    const tagCount = db
+      .prepare('SELECT COUNT(*) as c FROM note_tags WHERE tag = ?')
+      .get('ohs162-tag1') as { c: number };
+    assert.equal(tagCount.c, 0, 'tags should be deleted');
+
+    const fmCount = db
+      .prepare('SELECT COUNT(*) as c FROM note_frontmatter_fields WHERE value = ?')
+      .get('ohs162-active') as { c: number };
+    assert.equal(fmCount.c, 0, 'frontmatter fields should be deleted');
+
+    const chunkCount = db
+      .prepare(
+        'SELECT COUNT(*) as c FROM chunks WHERE note_id = (SELECT id FROM notes WHERE path = ?)',
+      )
+      .get('ohs162-full-note.md') as { c: number };
+    assert.equal(chunkCount.c, 0, 'chunks should be deleted');
+
+    const linkCount = db
+      .prepare('SELECT COUNT(*) as c FROM links WHERE from_path = ? OR to_path = ?')
+      .get('ohs162-full-note.md', 'ohs162-full-note.md') as { c: number };
+    assert.equal(linkCount.c, 0, 'links should be deleted');
+
+    const { recentActivity } = getStats();
+    assert.strictEqual(recentActivity[0]?.action, 'deleted');
+    assert.strictEqual(recentActivity[0]?.path, 'ohs162-full-note.md');
+  });
 });
 
 // ─── ignore patterns ─────────────────────────────────────────────────────────
