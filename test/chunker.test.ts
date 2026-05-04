@@ -58,6 +58,32 @@ describe('estimateTokens', () => {
     assert.equal(estimateTokens('שלום'), 5);
   });
 
+  it('handles empty string', () => {
+    assert.equal(estimateTokens(''), 0);
+  });
+
+  it('handles emoji (supplementary-plane chars)', () => {
+    // Emoji are outside BMP; each counts as 1 code point, weight 1.0 → ceil 1
+    assert.equal(estimateTokens('🎉'), 1);
+    // Hello 🎉 = 5 ASCII + space + emoji = 6*0.25 + 1 = 2.5 → ceil 3
+    assert.equal(estimateTokens('Hello 🎉'), 3);
+  });
+
+  it('counts Hangul Jamo as ~1.5 tokens each', () => {
+    // 한 = 3 jamo chars * 1.5 = 4.5 → ceil 5
+    assert.equal(estimateTokens('한'), 5);
+  });
+
+  it('counts CJK Compatibility Ideographs as ~1.4 tokens each', () => {
+    // 豈更 = 2 chars * 1.4 = 2.8 → ceil 3
+    assert.equal(estimateTokens('豈更'), 3);
+  });
+
+  it('counts Halfwidth Katakana as ~1.3 tokens each', () => {
+    // ﾊﾛ = 2 chars * 1.3 = 2.6 → ceil 3
+    assert.equal(estimateTokens('ﾊﾛ'), 3);
+  });
+
   it('mixed ASCII and non-ASCII', () => {
     // 'hi' = 2 * 0.25 = 0.5 → ceil = 1
     // 'Привет' = 6 * 1 = 6

@@ -31,16 +31,28 @@ function charTokenWeight(cp: number): number {
   if (cp <= 127) {
     return 0.25; // ASCII
   }
-  // Hangul Syllables — poorest vocab coverage among major scripts
-  if (cp >= 0xac00 && cp <= 0xd7a3) {
+  // Hangul Syllables + Jamo + Compatibility Jamo
+  if (
+    (cp >= 0xac00 && cp <= 0xd7a3) ||
+    (cp >= 0x1100 && cp <= 0x11ff) ||
+    (cp >= 0x3130 && cp <= 0x318f)
+  ) {
     return 1.5;
   }
-  // CJK Unified Ideographs (common + extension A)
-  if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf)) {
+  // CJK Unified Ideographs (common + extension A) + Compatibility Ideographs
+  if (
+    (cp >= 0x4e00 && cp <= 0x9fff) ||
+    (cp >= 0x3400 && cp <= 0x4dbf) ||
+    (cp >= 0xf900 && cp <= 0xfaff)
+  ) {
     return 1.4;
   }
-  // Hiragana / Katakana
-  if ((cp >= 0x3040 && cp <= 0x309f) || (cp >= 0x30a0 && cp <= 0x30ff)) {
+  // Hiragana / Katakana / Halfwidth Katakana
+  if (
+    (cp >= 0x3040 && cp <= 0x309f) ||
+    (cp >= 0x30a0 && cp <= 0x30ff) ||
+    (cp >= 0xff65 && cp <= 0xff9f)
+  ) {
     return 1.3;
   }
   // Thai — poor vocab coverage, heavy byte-fallback
@@ -140,6 +152,29 @@ export function splitBySections(content: string): Section[] {
   return sections;
 }
 
+/**
+ * Advance `start` position in `text` by up to `budget` tokens worth of
+ * characters. Returns the number of characters stepped (always ≥ 1 to
+ * guarantee forward progress).
+ */
+function advanceByTokenBudget(text: string, start: number, budget: number): number {
+  let stepped = 0;
+  let accum = 0;
+  while (stepped < text.length - start) {
+    const cp = text.codePointAt(start + stepped)!;
+    const nextAccum = accum + charTokenWeight(cp);
+    if (Math.ceil(nextAccum) > budget) {
+      // Ensure we always advance by at least one character to prevent
+      // an infinite loop when a single character exceeds the budget.
+      if (stepped === 0) stepped += cp > 0xffff ? 2 : 1;
+      break;
+    }
+    accum = nextAccum;
+    stepped += cp > 0xffff ? 2 : 1;
+  }
+  return stepped;
+}
+
 export function slidingWindow(
   text: string,
   contextLength: number,
@@ -174,17 +209,7 @@ export function slidingWindow(
     }
     if (end >= text.length) break;
 
-    // Advance start by stepTokens worth of chars
-    let stepped = 0;
-    let stepTokensAccum = 0;
-    while (stepped < text.length - start) {
-      const cp = text.codePointAt(start + stepped)!;
-      const nextAccum = stepTokensAccum + charTokenWeight(cp);
-      if (Math.ceil(nextAccum) > stepTokens) break;
-      stepTokensAccum = nextAccum;
-      stepped += cp > 0xffff ? 2 : 1;
-    }
-    start += stepped;
+    start += advanceByTokenBudget(text, start, stepTokens);
   }
 
   return chunks.length > 0

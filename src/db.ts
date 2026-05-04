@@ -246,6 +246,11 @@ function runMigrations(db: DB): void {
     CREATE INDEX IF NOT EXISTS idx_chunks_note_chunk_index ON chunks(note_id, chunk_index);
   `);
 
+  // Partial index for fast --errors lookups (only indexes failed rows)
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_chunks_failed ON chunks(embedding_status) WHERE embedding_status = 'failed'
+  `);
+
   // Ensure db_version counter exists (cross-process cache invalidation)
   db.prepare("INSERT OR IGNORE INTO settings(key, value) VALUES('db_version', '0')").run();
 
