@@ -25,6 +25,7 @@ import {
   startBackgroundIndexing,
   startWatcher,
 } from './indexer.js';
+import { registerProcessHandlers } from './process-resilience.js';
 import { readNotes, search } from './searcher.js';
 
 const _dir = dirname(fileURLToPath(import.meta.url));
@@ -524,6 +525,8 @@ async function main() {
 
   process.on('SIGTERM', () => process.exit(0));
   process.on('SIGINT', () => process.exit(0));
+
+  registerProcessHandlers();
 
   await server.connect(transport);
 
