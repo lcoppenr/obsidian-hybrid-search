@@ -2,20 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, it, vi } from 'vitest';
-
-// Mock db.js BEFORE any imports that use it (ESM live-binding rule)
-const deleteNoteMock = vi.fn(() => {
-  throw new Error('FK constraint');
-});
-
-vi.mock('../src/db.js', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('../src/db.js')>();
-  return {
-    ...mod,
-    deleteNote: deleteNoteMock,
-  };
-});
+import { afterAll, describe, it, vi } from 'vitest';
 
 // Mock chokidar before importing indexer
 vi.mock('chokidar', () => ({
@@ -27,19 +14,29 @@ vi.mock('chokidar', () => ({
 const vaultDir = mkdtempSync(path.join(tmpdir(), 'ohs-watcher-test-'));
 process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 
-const { startWatcher } = await import('../src/indexer');
-
 describe('watcher error resilience', () => {
-  beforeAll(() => {
-    deleteNoteMock.mockClear();
-  });
-
   afterAll(() => {
     rmSync(vaultDir, { recursive: true, force: true });
   });
 
   it('watcher unlink swallows deleteNote errors without crashing', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Scoped mock: temporarily replace deleteNote so we can observe the
+    // unlink handler's try/catch without leaking the mock to other test
+    // files (vitest runs with isolate: false).
+    vi.doMock('../src/db.js', async (importOriginal) => {
+      const mod = await importOriginal<typeof import('../src/db.js')>();
+      return {
+        ...mod,
+        deleteNote: vi.fn(() => {
+          throw new Error('FK constraint');
+        }),
+      };
+    });
+    vi.resetModules();
+
+    const { startWatcher } = await import('../src/indexer');
 
     startWatcher(512);
     await new Promise((r) => setTimeout(r, 50));
@@ -61,6 +58,8 @@ describe('watcher error resilience', () => {
       unlinkHandler(path.join(vaultDir, 'nonexistent.md'));
     });
 
+    const { deleteNote } = await import('../src/db.js');
+    const deleteNoteMock = vi.mocked(deleteNote);
     assert.equal(deleteNoteMock.mock.calls.length, 1, 'deleteNote should have been called');
     assert.ok(
       warnSpy.mock.calls.some((c) => String(c[0]).includes('[watcher] unlink error')),
@@ -68,5 +67,6 @@ describe('watcher error resilience', () => {
     );
 
     warnSpy.mockRestore();
+    vi.doUnmock('../src/db.js');
   });
 });
