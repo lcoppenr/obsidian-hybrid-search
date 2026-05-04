@@ -69,7 +69,7 @@
     "@commitlint/cli": "^20.4.3",
     "@commitlint/config-conventional": "^20.4.3",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.15.3",
+    "@types/node": "^25.6.0",
     "@vitest/coverage-v8": "^4.1.5",
     "eslint": "^9.25.1",
     "eslint-plugin-import": "^2.31.0",
@@ -86,7 +86,7 @@
   },
   "lint-staged": {
     "package.json": [
-      "npm test",
+      "sh -c 'npx vitest run'",
       "npm run knip"
     ],
     "*.{ts,js}": [
