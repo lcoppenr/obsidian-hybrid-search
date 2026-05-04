@@ -9,8 +9,8 @@ import {
 } from '../src/chunker.js';
 
 describe('estimateTokens', () => {
-  it('approximates tokens as chars/4', () => {
-    assert.equal(estimateTokens('hello'), 2);
+  it('approximates ASCII as chars/4', () => {
+    assert.equal(estimateTokens('hello'), 2); // 5 * 0.25 = 1.25 → ceil 2
     assert.equal(estimateTokens('a'.repeat(100)), 25);
   });
 
@@ -18,14 +18,59 @@ describe('estimateTokens', () => {
     assert.equal(estimateTokens('Привет'), 6);
   });
 
-  it('counts CJK chars as ~1 token each', () => {
-    assert.equal(estimateTokens('你好世界'), 4);
+  it('counts CJK ideographs as ~1.4 tokens each', () => {
+    // 你好世界 = 4 chars * 1.4 = 5.6 → ceil 6
+    assert.equal(estimateTokens('你好世界'), 6);
+  });
+
+  it('counts Hangul as ~1.5 tokens each', () => {
+    // 안녕하세요 = 5 chars * 1.5 = 7.5 → ceil 8
+    assert.equal(estimateTokens('안녕하세요'), 8);
+  });
+
+  it('counts Hiragana as ~1.3 tokens each', () => {
+    // ひらがな = 4 chars * 1.3 = 5.2 → ceil 6
+    assert.equal(estimateTokens('ひらがな'), 6);
+  });
+
+  it('counts Katakana as ~1.3 tokens each', () => {
+    // カタカナ = 4 chars * 1.3 = 5.2 → ceil 6
+    assert.equal(estimateTokens('カタカナ'), 6);
+  });
+
+  it('counts Thai as ~1.8 tokens each', () => {
+    // สวัสดี = 6 code points (including combining marks) * 1.8 = 10.8 → ceil 11
+    assert.equal(estimateTokens('สวัสดี'), 11);
+  });
+
+  it('counts Arabic as ~1.2 tokens each', () => {
+    // مرحبا = 5 chars * 1.2 = 6 → ceil 6
+    assert.equal(estimateTokens('مرحبا'), 6);
+  });
+
+  it('counts Devanagari as ~1.4 tokens each', () => {
+    // नमस्ते = 6 chars * 1.4 = 8.4 → ceil 9
+    assert.equal(estimateTokens('नमस्ते'), 9);
+  });
+
+  it('counts Hebrew as ~1.2 tokens each', () => {
+    // שלום = 4 chars * 1.2 = 4.8 → ceil 5
+    assert.equal(estimateTokens('שלום'), 5);
   });
 
   it('mixed ASCII and non-ASCII', () => {
     // 'hi' = 2 * 0.25 = 0.5 → ceil = 1
     // 'Привет' = 6 * 1 = 6
     assert.equal(estimateTokens('hiПривет'), 7);
+  });
+
+  it('mixed scripts', () => {
+    // hello = 5 * 0.25 = 1.25
+    // 你好 = 2 * 1.4 = 2.8
+    // 안녕 = 2 * 1.5 = 3
+    // ひら = 2 * 1.3 = 2.6
+    // Total = 9.65 → ceil 10
+    assert.equal(estimateTokens('hello你好안녕ひら'), 10);
   });
 });
 
@@ -201,6 +246,73 @@ describe('chunkNote', () => {
     const chunks = chunkNote(content, 50);
     assert.ok(chunks.length > 2);
   });
+
+  it('long Korean note splits into multiple chunks instead of one oversized chunk', () => {
+    // Repro from OHS-161 / GitHub issue #12:
+    // ~10k chars of Korean should not be treated as a single chunk when contextLength is 100.
+    const hangul = '한글'.repeat(5000); // 10000 chars
+    const content = `## Introduction\n\n${hangul}`;
+    const chunks = chunkNote(content, 100);
+    assert.ok(
+      chunks.length > 1,
+      `Expected multiple chunks for long Korean text, got ${chunks.length}`,
+    );
+    // No chunk should exceed context length by estimate
+    for (const c of chunks) {
+      assert.ok(
+        estimateTokens(c.text) <= 100,
+        `Chunk exceeds context length: ${estimateTokens(c.text)} > 100`,
+      );
+    }
+  });
+
+  it('long Chinese note splits into multiple chunks', () => {
+    const cjk = '中文'.repeat(5000); // 10000 chars
+    const content = `## Introduction\n\n${cjk}`;
+    const chunks = chunkNote(content, 100);
+    assert.ok(
+      chunks.length > 1,
+      `Expected multiple chunks for long Chinese text, got ${chunks.length}`,
+    );
+    for (const c of chunks) {
+      assert.ok(
+        estimateTokens(c.text) <= 100,
+        `Chunk exceeds context length: ${estimateTokens(c.text)} > 100`,
+      );
+    }
+  });
+
+  it('long Japanese note splits into multiple chunks', () => {
+    const hiragana = 'ひらがな'.repeat(2000); // 8000 chars
+    const content = `## Introduction\n\n${hiragana}`;
+    const chunks = chunkNote(content, 100);
+    assert.ok(
+      chunks.length > 1,
+      `Expected multiple chunks for long Japanese text, got ${chunks.length}`,
+    );
+    for (const c of chunks) {
+      assert.ok(
+        estimateTokens(c.text) <= 100,
+        `Chunk exceeds context length: ${estimateTokens(c.text)} > 100`,
+      );
+    }
+  });
+
+  it('long Thai note splits into multiple chunks', () => {
+    const thai = 'ไทย'.repeat(4000); // 12000 chars
+    const content = `## Introduction\n\n${thai}`;
+    const chunks = chunkNote(content, 100);
+    assert.ok(
+      chunks.length > 1,
+      `Expected multiple chunks for long Thai text, got ${chunks.length}`,
+    );
+    for (const c of chunks) {
+      assert.ok(
+        estimateTokens(c.text) <= 100,
+        `Chunk exceeds context length: ${estimateTokens(c.text)} > 100`,
+      );
+    }
+  });
 });
 
 describe('splitBySections — position tracking', () => {
@@ -249,6 +361,28 @@ describe('slidingWindow — position tracking', () => {
     assert.equal(chunks[0]!.charStart, 0);
     assert.ok(chunks[1]!.charStart > 0);
     assert.ok(chunks[1]!.charStart < chunks[1]!.charEnd);
+  });
+
+  it('splits Korean text respecting token estimate', () => {
+    const text = '한글'.repeat(200); // ~300 tokens by new heuristic
+    // Use contextLength=100 so each chunk has enough characters (> chunkMinLength=50)
+    const chunks = slidingWindow(text, 100, 10);
+    assert.ok(chunks.length > 1, `Expected multiple chunks, got ${chunks.length}`);
+    for (const c of chunks) {
+      assert.ok(
+        estimateTokens(c.text) <= 100,
+        `Chunk exceeds limit: ${estimateTokens(c.text)} > 100`,
+      );
+    }
+  });
+
+  it('splits Chinese text respecting token estimate', () => {
+    const text = '中文'.repeat(200); // ~280 tokens
+    const chunks = slidingWindow(text, 100, 10);
+    assert.ok(chunks.length > 1);
+    for (const c of chunks) {
+      assert.ok(estimateTokens(c.text) <= 100);
+    }
   });
 });
 

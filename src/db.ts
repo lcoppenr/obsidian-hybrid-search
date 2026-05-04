@@ -1081,6 +1081,28 @@ export function getStats(): {
   };
 }
 
+export interface FailedChunk {
+  path: string;
+  title: string;
+  chunkIndex: number;
+  headingPath: string | null;
+  text: string;
+}
+
+export function getFailedChunks(limit = 100): FailedChunk[] {
+  const db = getDb();
+  return db
+    .prepare(
+      `SELECT n.path, n.title, c.chunk_index, c.heading_path, c.text
+       FROM chunks c
+       JOIN notes n ON n.id = c.note_id
+       WHERE c.embedding_status = 'failed'
+       ORDER BY n.path, c.chunk_index
+       LIMIT ?`,
+    )
+    .all(limit) as FailedChunk[];
+}
+
 /**
  * Returns paths of notes that should be removed because they now match ignore patterns.
  * Stores new patterns in settings. Returns empty array if patterns unchanged.

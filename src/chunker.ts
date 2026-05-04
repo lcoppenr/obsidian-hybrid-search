@@ -20,17 +20,57 @@ function shouldSkipChunk(text: string): boolean {
   return trimmed.length < config.chunkMinLength || SKIP_PATTERNS.some((p) => p.test(trimmed));
 }
 
+/**
+ * Return the estimated token weight for a single Unicode code point.
+ * These coefficients are derived from empirical tokenization ratios of
+ * common embedding-model tokenizers (cl100k_base, SentencePiece, WordPiece).
+ * They are intentionally conservative: over-estimation causes more chunks
+ * (safe), under-estimation causes oversized chunks that get rejected by APIs.
+ */
+function charTokenWeight(cp: number): number {
+  if (cp <= 127) {
+    return 0.25; // ASCII
+  }
+  // Hangul Syllables — poorest vocab coverage among major scripts
+  if (cp >= 0xac00 && cp <= 0xd7a3) {
+    return 1.5;
+  }
+  // CJK Unified Ideographs (common + extension A)
+  if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3400 && cp <= 0x4dbf)) {
+    return 1.4;
+  }
+  // Hiragana / Katakana
+  if ((cp >= 0x3040 && cp <= 0x309f) || (cp >= 0x30a0 && cp <= 0x30ff)) {
+    return 1.3;
+  }
+  // Thai — poor vocab coverage, heavy byte-fallback
+  if (cp >= 0x0e00 && cp <= 0x0e7f) {
+    return 1.8;
+  }
+  // Devanagari (Hindi, Sanskrit, etc.)
+  if (cp >= 0x0900 && cp <= 0x097f) {
+    return 1.4;
+  }
+  // Arabic
+  if (cp >= 0x0600 && cp <= 0x06ff) {
+    return 1.2;
+  }
+  // Hebrew
+  if (cp >= 0x0590 && cp <= 0x05ff) {
+    return 1.2;
+  }
+  // Cyrillic — decent coverage, ~0.7 real but keep 1.0 as conservative fallback
+  if (cp >= 0x0400 && cp <= 0x04ff) {
+    return 1.0;
+  }
+  // General non-ASCII fallback
+  return 1.0;
+}
+
 export function estimateTokens(text: string): number {
-  // Cyrillic and other non-ASCII scripts: ~1 char per token
-  // ASCII (English): ~4 chars per token
   let tokens = 0;
   for (const char of text) {
-    const cp = char.codePointAt(0)!;
-    if (cp > 127) {
-      tokens += 1; // non-ASCII (Cyrillic, CJK, etc.)
-    } else {
-      tokens += 0.25; // ASCII
-    }
+    tokens += charTokenWeight(char.codePointAt(0)!);
   }
   return Math.ceil(tokens);
 }
@@ -115,9 +155,11 @@ export function slidingWindow(
     // Advance char by char until we reach contextLength tokens
     let end = start;
     let tokens = 0;
-    while (end < text.length && tokens < contextLength) {
+    while (end < text.length) {
       const cp = text.codePointAt(end)!;
-      tokens += cp > 127 ? 1 : 0.25;
+      const nextTokens = tokens + charTokenWeight(cp);
+      if (Math.ceil(nextTokens) > contextLength) break;
+      tokens = nextTokens;
       end += cp > 0xffff ? 2 : 1;
     }
 
@@ -135,9 +177,11 @@ export function slidingWindow(
     // Advance start by stepTokens worth of chars
     let stepped = 0;
     let stepTokensAccum = 0;
-    while (stepped < text.length - start && stepTokensAccum < stepTokens) {
+    while (stepped < text.length - start) {
       const cp = text.codePointAt(start + stepped)!;
-      stepTokensAccum += cp > 127 ? 1 : 0.25;
+      const nextAccum = stepTokensAccum + charTokenWeight(cp);
+      if (Math.ceil(nextAccum) > stepTokens) break;
+      stepTokensAccum = nextAccum;
       stepped += cp > 0xffff ? 2 : 1;
     }
     start += stepped;

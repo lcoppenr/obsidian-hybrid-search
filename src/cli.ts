@@ -18,6 +18,7 @@ import { config } from './config.js';
 import {
   applyDbConfigDefaults,
   checkModelChanged,
+  getFailedChunks,
   getStats,
   getStoredEmbeddingDim,
   getStoredModel,
@@ -570,7 +571,8 @@ program
   .command('status')
   .description('Show indexing status and configuration')
   .option('--recent', 'Include recent activity log')
-  .action(async (opts: { recent?: boolean }) => {
+  .option('--errors', 'Include list of chunks that failed to embed')
+  .action(async (opts: { recent?: boolean; errors?: boolean }) => {
     const [contextLength, updateInfo] = await Promise.all([init(), fetchUpdateStatus()]);
     const stats = getStats();
     const indexingStatus = getIndexingStatus();
@@ -602,10 +604,13 @@ program
     if (opts.recent) {
       output.recent_activity = stats.recentActivity;
     }
+    if (opts.errors) {
+      output.errors = getFailedChunks();
+    }
     console.log(JSON.stringify(output, null, 2));
-    if (stats.failedChunks > 0) {
+    if (!opts.errors && stats.failedChunks > 0) {
       console.warn(
-        `⚠️  ${stats.failedChunks} chunk(s) have no embeddings (text search still works)`,
+        `⚠️  ${stats.failedChunks} chunk(s) have no embeddings (text search still works). Use --errors to see details.`,
       );
     }
   });
