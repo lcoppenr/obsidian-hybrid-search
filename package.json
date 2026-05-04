@@ -52,7 +52,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.1",
     "better-sqlite3": "^12.1.0",
-    "chokidar": "^4.0.3",
+    "chokidar": "^5.0.0",
     "cli-table3": "^0.6.5",
     "commander": "^13.1.0",
     "gray-matter": "^4.0.3",
@@ -87,7 +87,7 @@
   "lint-staged": {
     "package.json": [
       "sh -c 'npx vitest run'",
-      "npm run knip"
+      "sh -c 'npm run knip'"
     ],
     "*.{ts,js}": [
       "eslint --fix",
