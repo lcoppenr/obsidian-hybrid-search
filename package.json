@@ -1,6 +1,6 @@
 {
   "name": "obsidian-hybrid-search",
-  "version": "0.12.20",
+  "version": "0.12.21",
   "type": "module",
   "bin": {
     "obsidian-hybrid-search": "./dist/src/cli.js",
@@ -14,16 +14,79 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "coverage": "vitest run --coverage",
     "eval": "tsx eval/evaluate.ts",
-    "eval:qmd": "tsx eval/evaluate-qmd.ts",
     "eval:compare": "tsx eval/compare.ts",
-    "eval:benchmark": "tsx eval/benchmark-speed.ts",
-    "lint": "eslint src test eval",
-    "lint:fix": "eslint src test eval --fix",
+    "eval:speed": "tsx eval/benchmark-speed.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "lint": "eslint src test eval",
     "knip": "knip"
   },
+  "keywords": [
+    "obsidian",
+    "search",
+    "hybrid-search",
+    "semantic-search",
+    "fulltext-search",
+    "sqlite",
+    "mcp"
+  ],
+  "author": "flowing-abyss",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flowing-abyss/obsidian-hybrid-search.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flowing-abyss/obsidian-hybrid-search/issues"
+  },
+  "homepage": "https://github.com/flowing-abyss/obsidian-hybrid-search#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/src",
+    "dist/eval",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.1",
+    "better-sqlite3": "^12.1.0",
+    "chokidar": "^4.0.3",
+    "cli-table3": "^0.6.5",
+    "commander": "^13.1.0",
+    "gray-matter": "^4.0.3",
+    "onnxruntime-node": "^1.20.1",
+    "picocolors": "^1.1.1",
+    "sqlite-vec": "^0.1.6",
+    "yaml": "^2.7.1",
+    "zod": "^3.24.4"
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.5.1"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^20.4.3",
+    "@commitlint/config-conventional": "^20.4.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "eslint": "^9.25.1",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-sonarjs": "^3.0.2",
+    "husky": "^9.1.7",
+    "knip": "^5.50.5",
+    "lint-staged": "^15.5.1",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.31.1",
+    "vitest": "^3.1.2"
+  },
   "lint-staged": {
+    "package.json": [
+      "npm test",
+      "npm run knip"
+    ],
     "*.{ts,js}": [
       "eslint --fix",
       "prettier --write"
@@ -31,48 +94,5 @@
     "*.{json,md,yml,yaml}": [
       "prettier --write"
     ]
-  },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/flowing-abyss/obsidian-hybrid-search"
-  },
-  "files": [
-    "dist/src",
-    "README.md"
-  ],
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "ajv": "^8.17.1",
-    "better-sqlite3": "^12.8.0",
-    "chokidar": "^5.0.0",
-    "cli-table3": "^0.6.3",
-    "commander": "^14.0.3",
-    "gray-matter": "^4.0.3",
-    "picocolors": "^1.1.1",
-    "sqlite-vec": "^0.1.9",
-    "yaml": "^2.8.3"
-  },
-  "optionalDependencies": {
-    "@huggingface/transformers": "^4.2.0"
-  },
-  "devDependencies": {
-    "@commitlint/cli": "^20.4.3",
-    "@commitlint/config-conventional": "^20.4.3",
-    "@eslint/js": "^10.0.1",
-    "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^25.6.0",
-    "@vitest/coverage-v8": "^4.1.5",
-    "eslint": "^10.0.3",
-    "eslint-plugin-sonarjs": "^4.0.1",
-    "husky": "^9.1.7",
-    "knip": "^6.6.1",
-    "lint-staged": "^16.3.2",
-    "prettier": "^3.8.1",
-    "prettier-plugin-organize-imports": "^4.3.0",
-    "tsx": "^4.0.0",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.59.0",
-    "vitest": "^4.1.5"
   }
 }
