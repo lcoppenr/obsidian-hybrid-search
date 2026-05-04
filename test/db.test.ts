@@ -630,11 +630,15 @@ describe('deleteNote semantics', () => {
     });
     upsertLinks('ohs162-full-note.md', ['other.md']);
 
+    const db = getDb();
+    const noteBefore = db
+      .prepare('SELECT id FROM notes WHERE path = ?')
+      .get('ohs162-full-note.md') as { id: number };
+
     assert.doesNotThrow(() => deleteNote('ohs162-full-note.md', false));
 
     assert.ok(!getNoteByPath('ohs162-full-note.md'), 'note should be deleted');
 
-    const db = getDb();
     const aliasCount = db
       .prepare('SELECT COUNT(*) as c FROM note_aliases WHERE alias = ?')
       .get('OHS162 Alias One') as { c: number };
@@ -651,10 +655,8 @@ describe('deleteNote semantics', () => {
     assert.equal(fmCount.c, 0, 'frontmatter fields should be deleted');
 
     const chunkCount = db
-      .prepare(
-        'SELECT COUNT(*) as c FROM chunks WHERE note_id = (SELECT id FROM notes WHERE path = ?)',
-      )
-      .get('ohs162-full-note.md') as { c: number };
+      .prepare('SELECT COUNT(*) as c FROM chunks WHERE note_id = ?')
+      .get(noteBefore.id) as { c: number };
     assert.equal(chunkCount.c, 0, 'chunks should be deleted');
 
     const linkCount = db
@@ -1205,6 +1207,24 @@ describe('cleanupNfcPaths migration', () => {
     db.prepare(
       'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
     ).run(nfcPath, 'Cafe', '[]', 'Content.', '', 1, 'h1');
+    const noteId = (
+      db.prepare('SELECT id FROM notes WHERE path = ?').get(nfcPath) as { id: number }
+    ).id;
+    // Insert child rows that would violate FK if not cleaned
+    db.prepare('INSERT INTO note_aliases (note_id, alias, alias_norm) VALUES (?, ?, ?)').run(
+      noteId,
+      'Cafe Alias',
+      'cafe alias',
+    );
+    db.prepare('INSERT INTO note_tags (note_id, tag, tag_norm) VALUES (?, ?, ?)').run(
+      noteId,
+      'nfc-tag',
+      'nfc-tag',
+    );
+    db.prepare(
+      'INSERT INTO note_frontmatter_fields (note_id, field, value, value_norm) VALUES (?, ?, ?, ?)',
+    ).run(noteId, 'status', 'active', 'active');
+    db.prepare('INSERT INTO links (from_path, to_path) VALUES (?, ?)').run('other.md', nfcPath);
 
     const before = getNoteByPath(nfcPath);
     assert.ok(before, 'NFC note should exist before reopen');
@@ -1216,6 +1236,24 @@ describe('cleanupNfcPaths migration', () => {
 
     const after = getNoteByPath(nfcPath);
     assert.ok(!after, 'NFC note should be removed after cleanupNfcPaths');
+    // Verify child rows are also cleaned — need fresh db handle after wipe/open
+    const dbAfter = getDb();
+    const aliasCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM note_aliases WHERE alias = ?')
+      .get('Cafe Alias') as { c: number };
+    assert.equal(aliasCount.c, 0, 'aliases should be cleaned');
+    const tagCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM note_tags WHERE tag = ?')
+      .get('nfc-tag') as { c: number };
+    assert.equal(tagCount.c, 0, 'tags should be cleaned');
+    const fmCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM note_frontmatter_fields WHERE value = ?')
+      .get('active') as { c: number };
+    assert.equal(fmCount.c, 0, 'frontmatter fields should be cleaned');
+    const linkCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM links WHERE to_path = ?')
+      .get(nfcPath) as { c: number };
+    assert.equal(linkCount.c, 0, 'backlinks should be cleaned');
   });
 });
 

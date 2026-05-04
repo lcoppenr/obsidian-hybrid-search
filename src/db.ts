@@ -449,7 +449,9 @@ function cleanupNfcPaths(db: DB): void {
       if (vecExists) {
         deleteVecChunksForNote(db, note.id);
       }
-      db.prepare('DELETE FROM links WHERE from_path = ?').run(note.path);
+      db.prepare('DELETE FROM chunks WHERE note_id = ?').run(note.id);
+      deleteChildRows(db, note.id);
+      db.prepare('DELETE FROM links WHERE from_path = ? OR to_path = ?').run(note.path, note.path);
       db.prepare('DELETE FROM notes WHERE id = ?').run(note.id);
     }
   }
