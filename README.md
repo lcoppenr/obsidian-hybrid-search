@@ -371,6 +371,27 @@ Uses the built-in `Xenova/multilingual-e5-small` model — works fully offline, 
 
 > **Note:** On first run, `npx` will install the package automatically. Ignore patterns are persisted in the database and restored on every subsequent startup even if the env var is missing.
 
+### Multi-computer / synced vault
+
+If your vault is synced via iCloud, Dropbox, or similar, each computer should have its own database to avoid sync conflicts. Set `OBSIDIAN_DB_DIR` to a local (non-synced) directory:
+
+```json
+{
+  "mcpServers": {
+    "obsidian-hybrid-search": {
+      "command": "npx",
+      "args": ["-y", "-p", "obsidian-hybrid-search@latest", "obsidian-hybrid-search-mcp"],
+      "env": {
+        "OBSIDIAN_VAULT_PATH": "/path/to/your/synced/vault",
+        "OBSIDIAN_DB_DIR": "/usr/local/var/obsidian-hybrid-search"
+      }
+    }
+  }
+}
+```
+
+Each computer sets its own `OBSIDIAN_DB_DIR` to a local path. The database file (`.obsidian-hybrid-search.db`) is created there instead of inside the vault. Run `reindex` once on each computer after setup.
+
 The server exposes four tools:
 
 | Tool      | Description                                                                                                                                                                                                                                                                                                                                               |
@@ -387,6 +408,7 @@ If `OBSIDIAN_PREFIX` is set, tool names are prefixed in the MCP list (for exampl
 | Environment variable       | Default                              | Description                                                                        |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
 | `OBSIDIAN_VAULT_PATH`      | Required for MCP; CLI auto-detects   | Absolute path to your vault                                                        |
+| `OBSIDIAN_DB_DIR`          | Vault root                           | Store the database in this directory instead of the vault root                     |
 | `OBSIDIAN_PREFIX`          | `""`                                 | Optional MCP tool prefix, e.g. `myvault_` → `myvault_search`, `myvault_read`       |
 | `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                    |
 | `OPENAI_API_KEY`           | —                                    | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio) |
