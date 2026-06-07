@@ -180,8 +180,13 @@ function discoverConfig(dbPathOpt?: string): void {
     if (vaultDir) dbFile = path.join(vaultDir, '.obsidian-hybrid-search.db');
   }
 
+  if (!dbFile && process.env.OBSIDIAN_DB_DIR) {
+    const candidate = path.join(process.env.OBSIDIAN_DB_DIR, '.obsidian-hybrid-search.db');
+    if (existsSync(candidate)) dbFile = candidate;
+  }
+
   if (!dbFile) {
-    if (!process.env.OBSIDIAN_VAULT_PATH) {
+    if (!process.env.OBSIDIAN_VAULT_PATH && !process.env.OBSIDIAN_DB_DIR) {
       const inferredVault = walkUpFind('.obsidian');
       if (inferredVault) {
         process.env.OBSIDIAN_VAULT_PATH = inferredVault;
@@ -235,7 +240,7 @@ function discoverConfig(dbPathOpt?: string): void {
     }
 
     // Fallback: infer vault path from DB location if not stored in settings
-    if (!process.env.OBSIDIAN_VAULT_PATH) {
+    if (!process.env.OBSIDIAN_VAULT_PATH && !process.env.OBSIDIAN_DB_DIR) {
       process.env.OBSIDIAN_VAULT_PATH = path.dirname(dbFile);
     }
   } catch {
