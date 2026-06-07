@@ -31,6 +31,8 @@ export const config = {
     return process.env.RERANKER_MODEL ?? 'onnx-community/bge-reranker-v2-m3-ONNX';
   },
   get dbPath(): string {
+    const dbDir = process.env.OBSIDIAN_DB_DIR;
+    if (dbDir) return path.join(dbDir, '.obsidian-hybrid-search.db');
     const v = process.env.OBSIDIAN_VAULT_PATH;
     if (!v) throw new Error('OBSIDIAN_VAULT_PATH environment variable is required');
     return path.join(v, '.obsidian-hybrid-search.db');
