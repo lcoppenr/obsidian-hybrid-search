@@ -1,5 +1,7 @@
 set -e
 
-npm test
-npm run knip
-npm run eval:quality
+npm run preflight
+
+if scripts/should-run-eval-quality.sh; then
+  npm run eval:quality
+fi

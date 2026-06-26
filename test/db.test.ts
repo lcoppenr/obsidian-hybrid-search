@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, it } from 'vitest';
@@ -39,7 +39,11 @@ const {
   initVecTable,
   upsertNote,
   upsertLinks,
+  upsertMarkdownLinks,
+  upsertNoteUrls,
   getLinksForPaths,
+  getMarkdownLinksForPaths,
+  getUrlsForPaths,
   getNoteByPath,
   getDb,
   deleteNote,
@@ -52,6 +56,9 @@ const {
   filterNotePathsByFrontmatter,
   getStoredModel,
   wipeDatabaseFiles,
+  wipeDatabaseSidecars,
+  isLikelyDatabaseCorruption,
+  closeDb,
 } = await import('../src/db.js');
 const { searchBm25, searchFuzzyTitle, search } = await import('../src/searcher.js');
 const { isIgnored } = await import('../src/ignore.js');
@@ -88,9 +95,7 @@ const initialNotes = [
 
 // ─── Setup / teardown ────────────────────────────────────────────────────────
 
-beforeAll(() => {
-  openDb();
-  initVecTable(4);
+function seedInitialNotes(): void {
   for (const note of initialNotes) {
     upsertNote({
       path: note.path,
@@ -102,10 +107,84 @@ beforeAll(() => {
       chunks: [{ text: note.content, embedding: fakeEmbedding }],
     });
   }
+}
+
+beforeAll(() => {
+  openDb();
+  initVecTable(4);
+  seedInitialNotes();
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(vaultDir, { recursive: true, force: true });
+});
+
+// ─── database corruption recovery primitives ─────────────────────────────────
+
+describe('database corruption helpers', () => {
+  it('classifies SQLite corruption errors without treating lock contention as corruption', () => {
+    assert.equal(isLikelyDatabaseCorruption('database disk image is malformed'), true);
+    assert.equal(isLikelyDatabaseCorruption('file is not a database'), true);
+    assert.equal(isLikelyDatabaseCorruption({ code: 'SQLITE_CORRUPT' }), true);
+    assert.equal(isLikelyDatabaseCorruption({ code: 'SQLITE_CORRUPT_VTAB' }), true);
+    assert.equal(isLikelyDatabaseCorruption({ code: 'SQLITE_NOTADB' }), true);
+
+    assert.equal(isLikelyDatabaseCorruption('database is locked'), false);
+    assert.equal(isLikelyDatabaseCorruption({ code: 'SQLITE_BUSY' }), false);
+    assert.equal(isLikelyDatabaseCorruption({ code: 'SQLITE_LOCKED' }), false);
+    assert.equal(isLikelyDatabaseCorruption('disk I/O error'), false);
+  });
+
+  it('wipes WAL and SHM sidecars without deleting the main database file', () => {
+    assert.equal(typeof wipeDatabaseSidecars, 'function');
+    const dbPath = path.join(vaultDir, '.obsidian-hybrid-search.db');
+    getDb().pragma('wal_checkpoint(TRUNCATE)');
+    closeDb();
+
+    assert.equal(existsSync(dbPath), true);
+    writeFileSync(`${dbPath}-wal`, 'wal marker');
+    writeFileSync(`${dbPath}-shm`, 'shm marker');
+
+    wipeDatabaseSidecars();
+
+    assert.equal(existsSync(dbPath), true);
+    assert.equal(existsSync(`${dbPath}-wal`), false);
+    assert.equal(existsSync(`${dbPath}-shm`), false);
+
+    openDb();
+    initVecTable(4);
+  });
+
+  it('surfaces sidecar deletion failures instead of continuing recovery', () => {
+    assert.equal(typeof wipeDatabaseSidecars, 'function');
+    const dbPath = path.join(vaultDir, '.obsidian-hybrid-search.db');
+    getDb().pragma('wal_checkpoint(TRUNCATE)');
+    closeDb();
+    mkdirSync(`${dbPath}-wal`);
+
+    assert.throws(() => wipeDatabaseSidecars());
+
+    rmSync(`${dbPath}-wal`, { recursive: true, force: true });
+    openDb();
+    initVecTable(4);
+  });
+
+  it('closes a partially opened database handle when openDb fails', () => {
+    const dbPath = path.join(vaultDir, '.obsidian-hybrid-search.db');
+    getDb().pragma('wal_checkpoint(TRUNCATE)');
+    closeDb();
+    writeFileSync(dbPath, 'not a sqlite database');
+
+    assert.throws(() => openDb(), /database|malformed|file/i);
+
+    wipeDatabaseFiles();
+    assert.equal(existsSync(dbPath), false);
+
+    openDb();
+    initVecTable(4);
+    seedInitialNotes();
+  });
 });
 
 // ─── frontmatter storage ─────────────────────────────────────────────────────
@@ -685,6 +764,12 @@ describe('ignore patterns (isIgnored)', () => {
     assert.ok(!isIgnored('notes/pkm/note.md'), 'different folder should not be ignored');
   });
 
+  it('keeps bare ignore patterns anchored to the vault root for compatibility', () => {
+    process.env.OBSIDIAN_IGNORE_PATTERNS = 'drafts';
+    assert.ok(isIgnored('drafts/note.md'), 'root drafts directory should be ignored');
+    assert.ok(!isIgnored('notes/drafts/note.md'), 'nested drafts directory should not be ignored');
+  });
+
   it('matches extension pattern', () => {
     process.env.OBSIDIAN_IGNORE_PATTERNS = '*.canvas';
     assert.ok(isIgnored('diagram.canvas'), '.canvas file should be ignored');
@@ -696,6 +781,71 @@ describe('ignore patterns (isIgnored)', () => {
     assert.ok(isIgnored('templates/daily.md'), 'templates path ignored');
     assert.ok(isIgnored('.obsidian/config.json'), '.obsidian path ignored');
     assert.ok(!isIgnored('notes/daily.md'), 'notes path not ignored');
+  });
+
+  it('respects .gitignore by default', () => {
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    writeFileSync(gitignorePath, 'gitignored.md\n');
+
+    try {
+      assert.ok(isIgnored('gitignored.md'), 'gitignored.md should be ignored by .gitignore');
+    } finally {
+      rmSync(gitignorePath, { force: true });
+    }
+  });
+
+  it('can disable gitignore matching', () => {
+    const oldRespect = process.env.OBSIDIAN_RESPECT_GITIGNORE;
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    process.env.OBSIDIAN_RESPECT_GITIGNORE = 'false';
+    writeFileSync(gitignorePath, 'gitignored-disabled.md\n');
+
+    try {
+      assert.ok(
+        !isIgnored('gitignored-disabled.md'),
+        'disabled gitignore should not ignore the path',
+      );
+    } finally {
+      if (oldRespect === undefined) delete process.env.OBSIDIAN_RESPECT_GITIGNORE;
+      else process.env.OBSIDIAN_RESPECT_GITIGNORE = oldRespect;
+      rmSync(gitignorePath, { force: true });
+    }
+  });
+
+  it('honors gitignore negation rules', () => {
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    writeFileSync(gitignorePath, 'negated.md\n!negated.md\nstill-ignored.md\n');
+
+    try {
+      assert.ok(!isIgnored('negated.md'), 'negated path should be re-included');
+      assert.ok(isIgnored('still-ignored.md'), 'non-negated path should stay ignored');
+    } finally {
+      rmSync(gitignorePath, { force: true });
+    }
+  });
+
+  it('allows include patterns to override gitignore only', () => {
+    const oldInclude = process.env.OBSIDIAN_INCLUDE_PATTERNS;
+    const oldIgnore = process.env.OBSIDIAN_IGNORE_PATTERNS;
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    process.env.OBSIDIAN_INCLUDE_PATTERNS = 'keep/**';
+    process.env.OBSIDIAN_IGNORE_PATTERNS = 'blocked/**';
+    writeFileSync(gitignorePath, 'git-only/**\nkeep/**\nblocked/**\n');
+
+    try {
+      assert.ok(isIgnored('git-only/note.md'), 'git-only path should be ignored by .gitignore');
+      assert.ok(!isIgnored('keep/note.md'), 'include pattern should override gitignore');
+      assert.ok(
+        isIgnored('blocked/note.md'),
+        'include pattern should not override explicit excludes',
+      );
+    } finally {
+      if (oldInclude === undefined) delete process.env.OBSIDIAN_INCLUDE_PATTERNS;
+      else process.env.OBSIDIAN_INCLUDE_PATTERNS = oldInclude;
+      if (oldIgnore === undefined) delete process.env.OBSIDIAN_IGNORE_PATTERNS;
+      else process.env.OBSIDIAN_IGNORE_PATTERNS = oldIgnore;
+      rmSync(gitignorePath, { force: true });
+    }
   });
 });
 
@@ -1277,6 +1427,111 @@ describe('restoreIgnorePatterns', () => {
     // Cleanup
     if (saved !== undefined) process.env.OBSIDIAN_IGNORE_PATTERNS = saved;
     else delete process.env.OBSIDIAN_IGNORE_PATTERNS;
+  });
+});
+
+// ─── Markdown links and URLs ─────────────────────────────────────────────────
+
+describe('markdown link and URL storage', () => {
+  it('replaces and reads markdown links with backlinks', () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    upsertMarkdownLinks('source.md', ['target-b.md', 'target-a.md']);
+    upsertMarkdownLinks('other.md', ['source.md']);
+    upsertMarkdownLinks('source.md', ['target-a.md']);
+
+    const maps = getMarkdownLinksForPaths(['source.md', 'target-a.md']);
+
+    assert.deepEqual(maps.links.get('source.md'), ['target-a.md']);
+    assert.deepEqual(maps.backlinks.get('source.md'), ['other.md']);
+    assert.deepEqual(maps.backlinks.get('target-a.md'), ['source.md']);
+  });
+
+  it('replaces and reads URLs in first-seen source order', () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    upsertNoteUrls('source.md', [
+      'https://second.example',
+      'https://first.example',
+      'https://second.example',
+    ]);
+
+    const urls = getUrlsForPaths(['source.md']);
+
+    assert.deepEqual(urls.get('source.md'), ['https://second.example', 'https://first.example']);
+  });
+
+  it('cleans markdown links and URLs on note delete according to keepLinks', () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const db = getDb();
+    for (const notePath of ['source.md', 'target.md', 'other.md']) {
+      db.prepare(
+        'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run(notePath, notePath, '[]', 'content', '', 1, notePath);
+    }
+
+    upsertMarkdownLinks('source.md', ['target.md']);
+    upsertMarkdownLinks('other.md', ['source.md']);
+    upsertNoteUrls('source.md', ['https://example.com']);
+
+    deleteNote('source.md', true);
+
+    let markdownCount = db.prepare('SELECT COUNT(*) as c FROM markdown_links').get() as {
+      c: number;
+    };
+    const urlCount = db.prepare('SELECT COUNT(*) as c FROM note_urls').get() as { c: number };
+    assert.equal(markdownCount.c, 2, 'keepLinks=true should preserve markdown graph rows');
+    assert.equal(urlCount.c, 0, 'note_urls for deleted source should be removed');
+
+    deleteNote('target.md', false);
+
+    markdownCount = db.prepare('SELECT COUNT(*) as c FROM markdown_links').get() as { c: number };
+    assert.equal(markdownCount.c, 1, 'physical target delete should remove rows involving target');
+  });
+
+  it('cleanupNfcPaths removes markdown and URL rows involving NFC paths', () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const nfcPath = 'caf\u00e9.md';
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(nfcPath, 'Cafe', '[]', 'Content.', '', 1, 'h1');
+    db.prepare('INSERT INTO markdown_links (from_path, to_path) VALUES (?, ?)').run(
+      'other.md',
+      nfcPath,
+    );
+    db.prepare('INSERT INTO markdown_links (from_path, to_path) VALUES (?, ?)').run(
+      nfcPath,
+      'other.md',
+    );
+    db.prepare('INSERT INTO note_urls (from_path, url, position) VALUES (?, ?, ?)').run(
+      nfcPath,
+      'https://example.com',
+      0,
+    );
+
+    openDb();
+    initVecTable(4);
+    const dbAfter = getDb();
+    const markdownCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM markdown_links WHERE from_path = ? OR to_path = ?')
+      .get(nfcPath, nfcPath) as { c: number };
+    const urlCount = dbAfter
+      .prepare('SELECT COUNT(*) as c FROM note_urls WHERE from_path = ?')
+      .get(nfcPath) as { c: number };
+
+    assert.equal(markdownCount.c, 0);
+    assert.equal(urlCount.c, 0);
   });
 });
 

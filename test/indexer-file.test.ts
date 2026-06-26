@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, it, vi } from 'vitest';
 
 vi.mock('chokidar', () => ({
   watch: vi.fn().mockReturnValue({
+    add: vi.fn().mockReturnThis(),
     on: vi.fn().mockReturnThis(),
   }),
 }));
@@ -13,7 +14,7 @@ vi.mock('chokidar', () => ({
 const vaultDir = mkdtempSync(path.join(tmpdir(), 'ohs-indexer-file-test-'));
 process.env.OBSIDIAN_VAULT_PATH = vaultDir;
 
-const { openDb, wipeDatabaseFiles, getNoteByPath, getDb, initVecTable } =
+const { closeDb, openDb, wipeDatabaseFiles, getNoteByPath, getDb, initVecTable } =
   await import('../src/db.js');
 
 // Spy on embedder *before* importing indexer so live bindings pick up the mocks
@@ -23,8 +24,10 @@ vi.spyOn(embedder, 'getContextLength').mockResolvedValue(512);
 
 const {
   indexFile,
+  indexFileWithRecovery,
   scanVault,
   populateMissingLinks,
+  populateMissingMarkdownReferences,
   cleanupStaleNotes,
   formatDuration,
   renderProgressLine,
@@ -40,6 +43,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  closeDb();
   rmSync(vaultDir, { recursive: true, force: true });
 });
 
@@ -91,6 +95,9 @@ describe('renderProgressLine', () => {
 // ─── scanVault / walkDir ─────────────────────────────────────────────────────
 
 describe('scanVault', () => {
+  const scanVaultRelPaths = (): string[] =>
+    scanVault().map((file) => path.relative(vaultDir, file).split(path.sep).join('/'));
+
   it('finds markdown files in the vault', () => {
     writeFileSync(path.join(vaultDir, 'found.md'), '# Found');
     const files = scanVault();
@@ -115,6 +122,85 @@ describe('scanVault', () => {
     writeFileSync(path.join(vaultDir, 'templates', 't.md'), '# T');
     const files = scanVault();
     assert.ok(!files.some((f) => f.includes('templates')));
+  });
+
+  it('respects root .gitignore rules during scan', () => {
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    const ignoredPath = path.join(vaultDir, 'ignored-by-git.md');
+    const visiblePath = path.join(vaultDir, 'visible-after-gitignore.md');
+    writeFileSync(gitignorePath, 'ignored-by-git.md\n');
+    writeFileSync(ignoredPath, '# Ignored');
+    writeFileSync(visiblePath, '# Visible');
+
+    try {
+      const files = scanVault();
+
+      assert.ok(!files.some((f) => f.endsWith('ignored-by-git.md')));
+      assert.ok(files.some((f) => f.endsWith('visible-after-gitignore.md')));
+    } finally {
+      rmSync(gitignorePath, { force: true });
+      rmSync(ignoredPath, { force: true });
+      rmSync(visiblePath, { force: true });
+    }
+  });
+
+  it('applies nested .gitignore only to descendants', () => {
+    const projectDir = path.join(vaultDir, 'project-gitignore-scope');
+    const rootDraftPath = path.join(vaultDir, 'draft.md');
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(path.join(projectDir, '.gitignore'), 'draft.md\n');
+    writeFileSync(path.join(projectDir, 'draft.md'), '# Ignored nested draft');
+    writeFileSync(rootDraftPath, '# Root draft');
+
+    try {
+      const files = scanVaultRelPaths();
+
+      assert.ok(!files.includes('project-gitignore-scope/draft.md'));
+      assert.ok(files.includes('draft.md'));
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+      rmSync(rootDraftPath, { force: true });
+    }
+  });
+
+  it('discovers nested .gitignore files under unicode directory names', () => {
+    const unicodeDir = path.join(vaultDir, 'Café-project');
+    mkdirSync(unicodeDir, { recursive: true });
+    writeFileSync(path.join(unicodeDir, '.gitignore'), 'hidden.md\n');
+    writeFileSync(path.join(unicodeDir, 'hidden.md'), '# Hidden unicode');
+    writeFileSync(path.join(unicodeDir, 'visible.md'), '# Visible unicode');
+
+    try {
+      const files = scanVaultRelPaths();
+
+      assert.ok(!files.includes('Café-project/hidden.md'));
+      assert.ok(files.includes('Café-project/visible.md'));
+    } finally {
+      rmSync(unicodeDir, { recursive: true, force: true });
+    }
+  });
+
+  it('descends into gitignored directories when include patterns can re-include notes', () => {
+    const oldInclude = process.env.OBSIDIAN_INCLUDE_PATTERNS;
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    const keepDir = path.join(vaultDir, 'gitignored-keep');
+    process.env.OBSIDIAN_INCLUDE_PATTERNS = 'gitignored-keep/reincluded.md';
+    mkdirSync(keepDir, { recursive: true });
+    writeFileSync(gitignorePath, 'gitignored-keep/\n');
+    writeFileSync(path.join(keepDir, 'hidden.md'), '# Hidden');
+    writeFileSync(path.join(keepDir, 'reincluded.md'), '# Reincluded');
+
+    try {
+      const files = scanVaultRelPaths();
+
+      assert.ok(!files.includes('gitignored-keep/hidden.md'));
+      assert.ok(files.includes('gitignored-keep/reincluded.md'));
+    } finally {
+      if (oldInclude === undefined) delete process.env.OBSIDIAN_INCLUDE_PATTERNS;
+      else process.env.OBSIDIAN_INCLUDE_PATTERNS = oldInclude;
+      rmSync(gitignorePath, { force: true });
+      rmSync(keepDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -166,6 +252,57 @@ describe('indexFile', () => {
   it('returns error for a non-existent file', async () => {
     const result = await indexFile(path.join(vaultDir, 'no-such-file.md'), 512);
     assert.ok(typeof result === 'object' && 'error' in result);
+  });
+
+  it('skips files ignored by current policy', async () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    const filePath = path.join(vaultDir, 'direct-ignored.md');
+    writeFileSync(gitignorePath, 'direct-ignored.md\n');
+    writeFileSync(filePath, '# Direct Ignored\n\nShould not be indexed.');
+
+    try {
+      const result = await indexFile(filePath, 512);
+
+      assert.equal(result, 'skipped');
+      assert.ok(!getNoteByPath('direct-ignored.md'));
+    } finally {
+      rmSync(gitignorePath, { force: true });
+      rmSync(filePath, { force: true });
+    }
+  });
+
+  it('auto-recovers and indexes a single file after database sidecar corruption', async () => {
+    const filePath = path.join(vaultDir, 'single-file-corrupt-recovery.md');
+    writeFileSync(filePath, '# Single File Corrupt Recovery\n\nRecovered marker.');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    embedSpy.mockRejectedValueOnce(new Error('database disk image is malformed'));
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let recoveries = 0;
+
+    const result = await indexFileWithRecovery(filePath, 512, false, () => {
+      recoveries++;
+      openDb();
+      initVecTable(4);
+    });
+
+    assert.equal(result, 'indexed');
+    assert.equal(recoveries, 1);
+    assert.ok(getNoteByPath('single-file-corrupt-recovery.md'));
+    assert.ok(
+      stderrSpy.mock.calls.some((c) => c[0]?.toString().includes('[auto-heal]')),
+      'expected single-file indexing to run auto-heal',
+    );
+
+    stderrSpy.mockRestore();
   });
 
   it('indexes frontmatter tags and aliases', async () => {
@@ -224,6 +361,66 @@ describe('populateMissingLinks', () => {
   });
 });
 
+// ─── populateMissingMarkdownReferences ───────────────────────────────────────
+
+describe('populateMissingMarkdownReferences', () => {
+  it('populates markdown links and URLs from existing note content', async () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const db = getDb();
+    db.prepare(
+      'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run(
+      'folder/source.md',
+      'Source',
+      '[]',
+      'See [Target](../target.md) and https://second.example then https://first.example.',
+      '',
+      1,
+      'h1',
+    );
+    db.prepare(
+      'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('target.md', 'Target', '[]', 'Target content.', '', 1, 'h2');
+
+    await populateMissingMarkdownReferences();
+
+    const links = db
+      .prepare('SELECT to_path FROM markdown_links WHERE from_path = ?')
+      .all('folder/source.md') as { to_path: string }[];
+    assert.deepEqual(
+      links.map((link) => link.to_path),
+      ['target.md'],
+    );
+
+    const urls = db
+      .prepare('SELECT url FROM note_urls WHERE from_path = ? ORDER BY position ASC')
+      .all('folder/source.md') as { url: string }[];
+    assert.deepEqual(
+      urls.map((row) => row.url),
+      ['https://second.example', 'https://first.example'],
+    );
+
+    const flag = db.prepare("SELECT value FROM settings WHERE key = 'markdown_links_v1'").get() as
+      | { value: string }
+      | undefined;
+    assert.equal(flag?.value, '1');
+  });
+
+  it('is idempotent once the settings flag is present', async () => {
+    await populateMissingMarkdownReferences();
+    const db = getDb();
+    db.prepare('DELETE FROM markdown_links').run();
+
+    await populateMissingMarkdownReferences();
+
+    const count = db.prepare('SELECT COUNT(*) as c FROM markdown_links').get() as { c: number };
+    assert.equal(count.c, 0);
+  });
+});
+
 // ─── cleanupStaleNotes ───────────────────────────────────────────────────────
 
 describe('cleanupStaleNotes', () => {
@@ -255,6 +452,27 @@ describe('cleanupStaleNotes', () => {
     cleanupStaleNotes(new Set(['still-here.md']));
     const note = getNoteByPath('still-here.md');
     assert.ok(note);
+  });
+
+  it('removes notes newly ignored by .gitignore', async () => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+
+    const filePath = path.join(vaultDir, 'gitignore-cleanup.md');
+    const gitignorePath = path.join(vaultDir, '.gitignore');
+    writeFileSync(filePath, '# Gitignore Cleanup\n\nBefore ignore.');
+    await indexFile(filePath, 512);
+    assert.ok(getNoteByPath('gitignore-cleanup.md'));
+
+    writeFileSync(gitignorePath, 'gitignore-cleanup.md\n');
+    try {
+      cleanupStaleNotes(new Set(['gitignore-cleanup.md']));
+      assert.ok(!getNoteByPath('gitignore-cleanup.md'));
+    } finally {
+      rmSync(gitignorePath, { force: true });
+      rmSync(filePath, { force: true });
+    }
   });
 });
 
@@ -311,6 +529,7 @@ describe('startBackgroundIndexing', () => {
       assert.equal(status.total, 0);
       assert.equal(status.isRunning, false);
     } finally {
+      closeDb();
       process.env.OBSIDIAN_VAULT_PATH = originalVault;
       rmSync(emptyVault, { recursive: true, force: true });
     }
@@ -341,6 +560,46 @@ describe('startBackgroundIndexing', () => {
       warnSpy.mock.calls.some((c) => String(c[0]).includes('background indexing error')),
       'expected console.warn to be called with error message',
     );
+
+    warnSpy.mockRestore();
+    stderrSpy.mockRestore();
+    resetIndexingState();
+  });
+
+  it('auto-recovers database sidecar corruption during background indexing', async () => {
+    writeFileSync(path.join(vaultDir, 'bg-corrupt-recovery.md'), '# BG Corrupt Recovery');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    resetIndexingState();
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    embedSpy.mockRejectedValueOnce(new Error('database disk image is malformed'));
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await startBackgroundIndexing(512);
+    await new Promise<void>((resolve) => {
+      const interval = setInterval(() => {
+        const status = getIndexingStatus();
+        if (!status.isRunning) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 50);
+    });
+
+    assert.ok(
+      stderrSpy.mock.calls.some((c) => c[0]?.toString().includes('[auto-heal]')),
+      'expected background indexing to run auto-heal',
+    );
+    assert.ok(
+      !warnSpy.mock.calls.some((c) => String(c[0]).includes('background indexing error')),
+      'expected background indexing to recover without surfacing a background error',
+    );
+    assert.ok(getNoteByPath('bg-corrupt-recovery.md'));
 
     warnSpy.mockRestore();
     stderrSpy.mockRestore();
@@ -413,6 +672,165 @@ describe('indexVaultSync', () => {
     stderrSpy.mockRestore();
   });
 
+  it('aborts before marking the index fresh when a file fails with database corruption', async () => {
+    const filePath = path.join(vaultDir, 'corrupt-db-error.md');
+    writeFileSync(filePath, '# Corrupt DB Error\\n\\nSome content here.', 'utf-8');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    resetIndexingState();
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    embedSpy.mockRejectedValueOnce(new Error('database disk image is malformed'));
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await assert.rejects(
+      () => indexVaultSync(false, 'Test indexing...'),
+      /database disk image is malformed/,
+    );
+
+    const lastIndexed = getDb()
+      .prepare("SELECT value FROM settings WHERE key = 'last_indexed'")
+      .get() as { value: string } | undefined;
+    assert.equal(lastIndexed, undefined);
+
+    stderrSpy.mockRestore();
+  });
+
+  it('recovers sidecars and retries only the affected batch during full-vault indexing', async () => {
+    const filePath = path.join(vaultDir, 'recover-corrupt-file.md');
+    const cleanPath = path.join(vaultDir, 'recover-clean-control.md');
+    writeFileSync(filePath, '# Recover Corrupt File\n\nNeeds Recovery marker.', 'utf-8');
+    writeFileSync(cleanPath, '# Recover Clean Control\n\nClean Control marker.', 'utf-8');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    resetIndexingState();
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    const embeddedTexts: string[] = [];
+    let hasThrownMalformed = false;
+    embedSpy.mockImplementation((texts: string[]) => {
+      const joined = texts.join('\n');
+      embeddedTexts.push(joined);
+      if (joined.includes('Needs Recovery marker') && !hasThrownMalformed) {
+        hasThrownMalformed = true;
+        throw new Error('database disk image is malformed');
+      }
+      return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+    });
+    let recoveries = 0;
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    try {
+      const result = await indexVaultSync(false, 'Test indexing...', {
+        recoverDatabase: () => {
+          recoveries++;
+          openDb();
+          initVecTable(4);
+        },
+      });
+
+      assert.equal(recoveries, 1);
+      assert.equal(result.errors.length, 0);
+      assert.ok(getNoteByPath('recover-corrupt-file.md'));
+      assert.ok(getNoteByPath('recover-clean-control.md'));
+      assert.equal(
+        embeddedTexts.filter((text) => text.includes('Needs Recovery marker')).length,
+        2,
+        'corruption-failed file should be retried once',
+      );
+      assert.equal(
+        embeddedTexts.filter((text) => text.includes('Clean Control marker')).length,
+        2,
+        'other files in the affected batch are retried to restore any WAL-backed writes',
+      );
+      const lastIndexed = getDb()
+        .prepare("SELECT value FROM settings WHERE key = 'last_indexed'")
+        .get() as { value: string } | undefined;
+      assert.ok(lastIndexed);
+    } finally {
+      embedSpy.mockReset();
+      embedSpy.mockResolvedValue([new Float32Array([0.1, 0.2, 0.3, 0.4])]);
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('does not mark the index fresh when corruption repeats after recovery', async () => {
+    const filePath = path.join(vaultDir, 'repeat-corrupt-file.md');
+    writeFileSync(filePath, '# Repeat Corrupt File\n\nRepeats malformed marker.', 'utf-8');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    resetIndexingState();
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    embedSpy.mockImplementation((texts: string[]) => {
+      if (texts.join('\n').includes('Repeats malformed marker')) {
+        throw new Error('database disk image is malformed');
+      }
+      return texts.map(() => new Float32Array([0.1, 0.2, 0.3, 0.4]));
+    });
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let recoveries = 0;
+
+    try {
+      await assert.rejects(
+        () =>
+          indexVaultSync(false, 'Test indexing...', {
+            recoverDatabase: () => {
+              recoveries++;
+              openDb();
+              initVecTable(4);
+            },
+          }),
+        /database disk image is malformed/,
+      );
+
+      assert.equal(recoveries, 1);
+      const lastIndexed = getDb()
+        .prepare("SELECT value FROM settings WHERE key = 'last_indexed'")
+        .get() as { value: string } | undefined;
+      assert.equal(lastIndexed, undefined);
+    } finally {
+      embedSpy.mockReset();
+      embedSpy.mockResolvedValue([new Float32Array([0.1, 0.2, 0.3, 0.4])]);
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it('does not mark the index fresh when requireClean sees non-corruption errors', async () => {
+    const filePath = path.join(vaultDir, 'require-clean-error.md');
+    writeFileSync(filePath, '# Require Clean Error\\n\\nSome content here.', 'utf-8');
+
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    resetIndexingState();
+
+    const embedSpy = embedder.embed as ReturnType<typeof vi.fn>;
+    embedSpy.mockRejectedValueOnce(new Error('embedding API unavailable'));
+
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await assert.rejects(
+      () => indexVaultSync(false, 'Test indexing...', { requireClean: true }),
+      /index freshness was not updated/,
+    );
+
+    const lastIndexed = getDb()
+      .prepare("SELECT value FROM settings WHERE key = 'last_indexed'")
+      .get() as { value: string } | undefined;
+    assert.equal(lastIndexed, undefined);
+
+    stderrSpy.mockRestore();
+  });
+
   it('returns zero counts for empty vault', async () => {
     const emptyVault = mkdtempSync(path.join(tmpdir(), 'ohs-empty-'));
     const originalVault = process.env.OBSIDIAN_VAULT_PATH;
@@ -432,6 +850,7 @@ describe('indexVaultSync', () => {
       assert.equal(result.skipped, 0);
       assert.equal(result.errors.length, 0);
     } finally {
+      closeDb();
       process.env.OBSIDIAN_VAULT_PATH = originalVault;
       rmSync(emptyVault, { recursive: true, force: true });
     }
@@ -502,5 +921,16 @@ describe('indexVaultSync', () => {
     startWatcher(4);
     await new Promise((r) => setTimeout(r, 10));
     assert.equal((chokidar.watch as ReturnType<typeof vi.fn>).mock.calls.length, 1);
+  });
+
+  it('startWatcher does not ignore .gitignore files', async () => {
+    const chokidar = await import('chokidar');
+    const { startWatcher } = await import('../src/indexer');
+    startWatcher(4);
+    await new Promise((r) => setTimeout(r, 10));
+
+    const lastCall = (chokidar.watch as ReturnType<typeof vi.fn>).mock.calls.at(-1);
+    const options = lastCall?.[1] as { ignored?: (filePath: string) => boolean } | undefined;
+    assert.equal(options?.ignored?.(path.join(vaultDir, '.gitignore')), false);
   });
 });

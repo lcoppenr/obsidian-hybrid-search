@@ -1,6 +1,7 @@
 {
   "name": "obsidian-hybrid-search",
-  "version": "0.13.5",
+  "version": "0.13.15",
+  "mcpName": "io.github.flowing-abyss/obsidian-hybrid-search",
   "type": "module",
   "bin": {
     "obsidian-hybrid-search": "./dist/src/cli.js",
@@ -27,7 +28,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint src test eval",
-    "knip": "knip"
+    "knip": "knip",
+    "preflight": "bash scripts/ci-preflight.sh",
+    "sync-server-json": "bash scripts/sync-server-json.sh"
   },
   "keywords": [
     "obsidian",
@@ -54,19 +57,25 @@
   "files": [
     "dist/src",
     "dist/eval",
+    "assets/banner.png",
     "README.md",
     "LICENSE"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^12.11.1",
     "chokidar": "^5.0.0",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
     "gray-matter": "^4.0.3",
+    "ignore": "^7.0.5",
     "onnxruntime-node": "^1.26.0",
     "picocolors": "^1.1.1",
+    "remark-gfm": "^4.0.1",
+    "remark-parse": "^11.0.0",
     "sqlite-vec": "^0.1.9",
+    "unified": "^11.0.5",
+    "unist-util-visit": "^5.1.0",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
@@ -77,23 +86,24 @@
     "@commitlint/cli": "^20.5.3",
     "@commitlint/config-conventional": "^20.5.3",
     "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.4",
     "@vitest/coverage-v8": "^4.1.5",
     "eslint": "^9.39.4",
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-sonarjs": "^4.0.3",
     "husky": "^9.1.7",
-    "knip": "^6.15.0",
+    "knip": "^6.17.2",
     "lint-staged": "^16.4.0",
-    "prettier": "^3.8.3",
+    "prettier": "^3.8.4",
     "prettier-plugin-organize-imports": "^4.3.0",
     "tsx": "^4.22.4",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.60.0",
+    "typescript-eslint": "^8.61.1",
     "vitest": "^4.1.5"
   },
   "lint-staged": {
     "package.json": [
+      "npm run sync-server-json",
       "sh -c 'npx vitest run'",
       "sh -c 'npm run knip'"
     ],

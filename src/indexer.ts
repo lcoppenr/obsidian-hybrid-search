@@ -10,21 +10,147 @@ import {
   getDb,
   getNoteMeta,
   getPathsToRemoveForIgnoreChange,
+  getStoredEmbeddingDim,
+  initVecTable,
+  isLikelyDatabaseCorruption,
+  openDb,
   updateLastIndexed,
   upsertLinks,
+  upsertMarkdownLinks,
   upsertNote,
+  upsertNoteUrls,
+  wipeDatabaseSidecars,
 } from './db.js';
 import { embed, getContextLength } from './embedder.js';
-import { isIgnored } from './ignore.js';
+import { createIgnorePolicy, type IgnorePolicy } from './ignore.js';
+import { extractMarkdownReferences, resolveMarkdownNoteLinks } from './markdown-references.js';
 import { bumpIndexVersion } from './searcher.js';
 
-interface IndexResult {
+export interface IndexResult {
   indexed: number;
   skipped: number;
   errors: Array<{ path: string; error: string }>;
 }
 
-function* walkDir(dir: string): Generator<string> {
+function findDatabaseCorruptionError(
+  errors: ReadonlyArray<{ path: string; error: string }>,
+): { path: string; error: string } | undefined {
+  return errors.find((error) => isLikelyDatabaseCorruption(error.error));
+}
+
+function recoverDatabaseSidecarsForIndexing(): void {
+  wipeDatabaseSidecars();
+  openDb();
+  const embeddingDim = getStoredEmbeddingDim();
+  if (embeddingDim !== null) {
+    initVecTable(embeddingDim);
+  }
+}
+
+async function runWithDatabaseRecovery<T>(
+  label: string,
+  operation: () => T | Promise<T>,
+  recoverDatabase: (() => void) | undefined,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (err) {
+    if (!recoverDatabase || !isLikelyDatabaseCorruption(err)) throw err;
+    process.stderr.write(
+      `[auto-heal] SQLite index corruption detected during ${label}; removing WAL/SHM sidecars and retrying once.\n`,
+    );
+    recoverDatabase();
+    return operation();
+  }
+}
+
+async function indexBatch(
+  files: readonly string[],
+  contextLength: number,
+  force: boolean,
+): Promise<IndexResult> {
+  const result: IndexResult = { indexed: 0, skipped: 0, errors: [] };
+  const policy = createIgnorePolicy();
+  await Promise.all(
+    files.map(async (f) => {
+      const status = await indexFile(f, contextLength, force, policy);
+      if (status === 'indexed') result.indexed++;
+      else if (status === 'skipped') result.skipped++;
+      else {
+        result.errors.push({
+          path: f,
+          error: typeof status === 'object' ? status.error : 'indexing failed',
+        });
+      }
+    }),
+  );
+  return result;
+}
+
+async function indexBatchWithRecovery(
+  batch: readonly string[],
+  contextLength: number,
+  force: boolean,
+  recoverDatabase: (() => void) | undefined,
+): Promise<IndexResult> {
+  const batchResult = await indexBatch(batch, contextLength, force);
+  const corruption = findDatabaseCorruptionError(batchResult.errors);
+  if (!corruption) return batchResult;
+
+  if (!recoverDatabase) {
+    throw new Error(`${corruption.path}: ${corruption.error}`);
+  }
+
+  process.stderr.write(
+    `[auto-heal] SQLite index corruption detected; removing WAL/SHM sidecars and retrying ${batch.length} file${batch.length > 1 ? 's' : ''} from the affected batch.\n`,
+  );
+  recoverDatabase();
+
+  const retryResult = await indexBatch(batch, contextLength, true);
+  const retryCorruption = findDatabaseCorruptionError(retryResult.errors);
+  if (retryCorruption) {
+    throw new Error(`${retryCorruption.path}: ${retryCorruption.error}`);
+  }
+
+  return retryResult;
+}
+
+export async function withIndexingDbLock<T>(operation: () => T | Promise<T>): Promise<T> {
+  const run = _indexingDbLock.then(
+    () => Promise.resolve(operation()),
+    () => Promise.resolve(operation()),
+  );
+  _indexingDbLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
+function toVaultRelativePath(fullPath: string): string {
+  return path.relative(config.vaultPath, fullPath).split(path.sep).join('/').normalize('NFD');
+}
+
+function getExistingNotePathSet(): Set<string> {
+  const rows = getDb().prepare('SELECT path FROM notes').all() as { path: string }[];
+  return new Set(rows.map((row) => row.path));
+}
+
+function resolveMarkdownReferencesForNote(
+  fromPath: string,
+  content: string,
+  existingPaths = getExistingNotePathSet(),
+): { links: string[]; urls: string[] } {
+  const references = extractMarkdownReferences(content);
+  const links = resolveMarkdownNoteLinks(
+    fromPath,
+    references.localDestinations.map((link) => link.destination),
+    existingPaths,
+  );
+  return { links, urls: references.urls };
+}
+
+function* walkDir(dir: string, policy: IgnorePolicy): Generator<string> {
   let entries: { name: string; isDirectory(): boolean; isFile(): boolean }[];
   try {
     entries = readdirSync(dir, {
@@ -37,9 +163,9 @@ function* walkDir(dir: string): Generator<string> {
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      const rel = path.relative(config.vaultPath, full);
-      if (!isIgnored(rel + '/')) {
-        yield* walkDir(full);
+      const rel = toVaultRelativePath(full);
+      if (!policy.isIgnored(rel + '/')) {
+        yield* walkDir(full, policy);
       }
     } else if (entry.isFile() && entry.name.endsWith('.md')) {
       yield full;
@@ -49,9 +175,10 @@ function* walkDir(dir: string): Generator<string> {
 
 export function scanVault(): string[] {
   const files: string[] = [];
-  for (const fullPath of walkDir(config.vaultPath)) {
-    const rel = path.relative(config.vaultPath, fullPath);
-    if (!isIgnored(rel)) {
+  const policy = createIgnorePolicy();
+  for (const fullPath of walkDir(config.vaultPath, policy)) {
+    const rel = toVaultRelativePath(fullPath);
+    if (!policy.isIgnored(rel)) {
       files.push(fullPath);
     }
   }
@@ -62,12 +189,14 @@ export async function indexFile(
   fullPath: string,
   contextLength?: number,
   force = false,
+  policy = createIgnorePolicy(),
 ): Promise<'indexed' | 'skipped' | { error: string }> {
   try {
     const stat = statSync(fullPath);
     const mtime = stat.mtimeMs;
 
-    const relPath = path.relative(config.vaultPath, fullPath).normalize('NFD');
+    const relPath = toVaultRelativePath(fullPath);
+    if (policy.isIgnored(relPath)) return 'skipped';
     const existing = force ? undefined : getNoteMeta(relPath);
 
     // Fast skip: mtime unchanged
@@ -131,6 +260,9 @@ export async function indexFile(
 
     const resolvedLinks = resolveWikilinks(frontmatterRaw + '\n' + content, relPath);
     upsertLinks(relPath, resolvedLinks);
+    const markdownReferences = resolveMarkdownReferencesForNote(relPath, content);
+    upsertMarkdownLinks(relPath, markdownReferences.links);
+    upsertNoteUrls(relPath, markdownReferences.urls);
 
     bumpIndexVersion();
     return 'indexed';
@@ -141,6 +273,25 @@ export async function indexFile(
     }
     return { error: msg };
   }
+}
+
+export async function indexFileWithRecovery(
+  fullPath: string,
+  contextLength: number,
+  force = false,
+  recoverDatabase: () => void = recoverDatabaseSidecarsForIndexing,
+): Promise<'indexed' | 'skipped' | { error: string }> {
+  const policy = createIgnorePolicy();
+  const status = await indexFile(fullPath, contextLength, force, policy);
+  if (status === 'indexed' || status === 'skipped' || !isLikelyDatabaseCorruption(status.error)) {
+    return status;
+  }
+
+  process.stderr.write(
+    '[auto-heal] SQLite index corruption detected while indexing one file; removing WAL/SHM sidecars and retrying once.\n',
+  );
+  recoverDatabase();
+  return indexFile(fullPath, contextLength, true, createIgnorePolicy());
 }
 
 /**
@@ -174,6 +325,41 @@ export async function populateMissingLinks(): Promise<void> {
 }
 
 /**
+ * One-time migration: populate resolved Markdown file links and external URLs
+ * from stored note content for all notes indexed before this feature existed.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await
+export async function populateMissingMarkdownReferences(): Promise<void> {
+  const db = getDb();
+  const done = (
+    db.prepare("SELECT value FROM settings WHERE key = 'markdown_links_v1'").get() as
+      | { value: string }
+      | undefined
+  )?.value;
+  if (done) return;
+
+  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as {
+    path: string;
+    content: string;
+  }[];
+  const existingPaths = new Set(notes.map((note) => note.path));
+  const tx = db.transaction(() => {
+    for (const note of notes) {
+      const references = resolveMarkdownReferencesForNote(note.path, note.content, existingPaths);
+      upsertMarkdownLinks(note.path, references.links);
+      upsertNoteUrls(note.path, references.urls);
+    }
+    db.prepare(
+      "INSERT OR REPLACE INTO settings(key, value) VALUES('markdown_links_v1', '1')",
+    ).run();
+    db.prepare(
+      "INSERT OR REPLACE INTO settings(key, value) VALUES('db_version', CAST(COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'db_version'), 0) + 1 AS TEXT))",
+    ).run();
+  });
+  tx();
+}
+
+/**
  * Re-resolve wikilinks for ALL indexed notes unconditionally.
  * Called after every full vault reindex so that notes whose targets
  * didn't exist at index time get their links backfilled.
@@ -194,6 +380,21 @@ async function resolveAllLinks(): Promise<void> {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/require-await
+async function resolveAllMarkdownReferences(): Promise<void> {
+  const db = getDb();
+  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as {
+    path: string;
+    content: string;
+  }[];
+  const existingPaths = new Set(notes.map((note) => note.path));
+  for (const note of notes) {
+    const references = resolveMarkdownReferencesForNote(note.path, note.content, existingPaths);
+    upsertMarkdownLinks(note.path, references.links);
+    upsertNoteUrls(note.path, references.urls);
+  }
+}
+
 /**
  * Remove notes that no longer belong in the index:
  * - notes matching updated ignore patterns
@@ -205,9 +406,14 @@ export function cleanupStaleNotes(fsPaths?: Set<string>): void {
 
   // Newly ignored notes: file still exists on disk, keep their link entries
   // so backlinks from ignored notes remain visible in search results
-  const pathsToRemove = getPathsToRemoveForIgnoreChange(config.ignorePatterns);
+  const policy = createIgnorePolicy();
+  const pathsToRemove = getPathsToRemoveForIgnoreChange(
+    config.ignorePatterns,
+    policy.signature(),
+    (p) => policy.isIgnored(p),
+  );
   for (const p of pathsToRemove) {
-    if (isIgnored(p)) {
+    if (policy.isIgnored(p)) {
       deleteNote(p, true); // keepLinks=true
       deleted++;
     }
@@ -253,17 +459,35 @@ export function renderProgressLine(processed: number, total: number, etaStr: str
 export async function indexVaultSync(
   force = false,
   header = 'Indexing vault...',
+  options: { requireClean?: boolean; recoverDatabase?: () => void } = {},
 ): Promise<IndexResult> {
   const files = scanVault();
-  const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));
-  cleanupStaleNotes(fsPaths);
+  const fsPaths = new Set(files.map(toVaultRelativePath));
+  await runWithDatabaseRecovery(
+    'stale-note cleanup',
+    () => cleanupStaleNotes(fsPaths),
+    options.recoverDatabase,
+  );
 
   const contextLength = await getContextLength();
   const result: IndexResult = { indexed: 0, skipped: 0, errors: [] };
 
   if (files.length === 0) {
-    await resolveAllLinks();
-    updateLastIndexed();
+    await runWithDatabaseRecovery(
+      'link resolution',
+      () => resolveAllLinks(),
+      options.recoverDatabase,
+    );
+    await runWithDatabaseRecovery(
+      'markdown reference resolution',
+      () => resolveAllMarkdownReferences(),
+      options.recoverDatabase,
+    );
+    await runWithDatabaseRecovery(
+      'freshness update',
+      () => updateLastIndexed(),
+      options.recoverDatabase,
+    );
     return result;
   }
 
@@ -279,18 +503,15 @@ export async function indexVaultSync(
 
   for (let i = 0; i < files.length; i += config.batchSize) {
     const batch = files.slice(i, i + config.batchSize);
-    await Promise.all(
-      batch.map(async (f) => {
-        const status = await indexFile(f, contextLength, force);
-        if (status === 'indexed') result.indexed++;
-        else if (status === 'skipped') result.skipped++;
-        else
-          result.errors.push({
-            path: f,
-            error: typeof status === 'object' ? status.error : 'indexing failed',
-          });
-      }),
+    const batchResult = await indexBatchWithRecovery(
+      batch,
+      contextLength,
+      force,
+      options.recoverDatabase,
     );
+    result.indexed += batchResult.indexed;
+    result.skipped += batchResult.skipped;
+    result.errors.push(...batchResult.errors);
 
     const processed = Math.min(i + config.batchSize, files.length);
     const completedBatches = Math.floor(i / config.batchSize) + 1;
@@ -323,9 +544,29 @@ export async function indexVaultSync(
   for (const e of result.errors) {
     process.stderr.write(`  ${e.path}: ${e.error}\n`);
   }
+  if (options.requireClean === true && result.errors.length > 0) {
+    throw new Error(
+      `Full-vault reindex failed with ${result.errors.length} error${
+        result.errors.length > 1 ? 's' : ''
+      }; index freshness was not updated.`,
+    );
+  }
 
-  await resolveAllLinks();
-  updateLastIndexed();
+  await runWithDatabaseRecovery(
+    'link resolution',
+    () => resolveAllLinks(),
+    options.recoverDatabase,
+  );
+  await runWithDatabaseRecovery(
+    'markdown reference resolution',
+    () => resolveAllMarkdownReferences(),
+    options.recoverDatabase,
+  );
+  await runWithDatabaseRecovery(
+    'freshness update',
+    () => updateLastIndexed(),
+    options.recoverDatabase,
+  );
   return result;
 }
 
@@ -333,6 +574,7 @@ const _indexQueue: string[] = [];
 let _isIndexing = false;
 let _totalExpected = 0;
 let _processedCount = 0;
+let _indexingDbLock: Promise<void> = Promise.resolve();
 
 /** @internal Reset module-level queue state for test isolation. */
 export function resetIndexingState(): void {
@@ -340,6 +582,7 @@ export function resetIndexingState(): void {
   _isIndexing = false;
   _totalExpected = 0;
   _processedCount = 0;
+  _indexingDbLock = Promise.resolve();
 }
 
 /**
@@ -368,56 +611,75 @@ export function getIndexingStatus(): {
 
 async function processQueue(contextLength: number): Promise<void> {
   if (_isIndexing) return;
-  _isIndexing = true;
-  const total = _totalExpected;
-  const startTime = Date.now();
-
-  if (total > 0) {
-    process.stderr.write(`Indexing vault...\n`);
-  }
-
-  try {
-    const logEvery = Math.max(config.batchSize, Math.floor(total / 10));
-    while (_indexQueue.length > 0) {
-      const batch = _indexQueue.splice(0, config.batchSize);
-      await Promise.all(batch.map((f) => indexFile(f, contextLength)));
-      _processedCount += batch.length;
-
-      if (
-        total > 0 &&
-        (_processedCount % logEvery < config.batchSize || _indexQueue.length === 0)
-      ) {
-        const pct = Math.round((_processedCount / total) * 100);
-        const elapsedSec = (Date.now() - startTime) / 1000;
-        const rate = elapsedSec > 0 ? _processedCount / elapsedSec : 0;
-        const remainingSec = rate > 0 && _indexQueue.length > 0 ? _indexQueue.length / rate : 0;
-        const eta = remainingSec > 5 ? ` — ${formatDuration(remainingSec)} remaining` : '';
-        process.stderr.write(`${_processedCount}/${total} (${pct}%)${eta}\n`);
-      }
-    }
-
-    updateLastIndexed();
+  await withIndexingDbLock(async () => {
+    if (_isIndexing) return;
+    _isIndexing = true;
+    const total = _totalExpected;
+    const startTime = Date.now();
 
     if (total > 0) {
-      const elapsed = formatDuration((Date.now() - startTime) / 1000);
-      process.stderr.write(`Indexing complete in ${elapsed}\n`);
+      process.stderr.write(`Indexing vault...\n`);
     }
-  } finally {
-    _isIndexing = false;
-  }
+
+    try {
+      const logEvery = Math.max(config.batchSize, Math.floor(total / 10));
+      while (_indexQueue.length > 0) {
+        const batch = _indexQueue.splice(0, config.batchSize);
+        await indexBatchWithRecovery(
+          batch,
+          contextLength,
+          false,
+          recoverDatabaseSidecarsForIndexing,
+        );
+        _processedCount += batch.length;
+
+        if (
+          total > 0 &&
+          (_processedCount % logEvery < config.batchSize || _indexQueue.length === 0)
+        ) {
+          const pct = Math.round((_processedCount / total) * 100);
+          const elapsedSec = (Date.now() - startTime) / 1000;
+          const rate = elapsedSec > 0 ? _processedCount / elapsedSec : 0;
+          const remainingSec = rate > 0 && _indexQueue.length > 0 ? _indexQueue.length / rate : 0;
+          const eta = remainingSec > 5 ? ` — ${formatDuration(remainingSec)} remaining` : '';
+          process.stderr.write(`${_processedCount}/${total} (${pct}%)${eta}\n`);
+        }
+      }
+
+      await runWithDatabaseRecovery(
+        'background freshness update',
+        () => updateLastIndexed(),
+        recoverDatabaseSidecarsForIndexing,
+      );
+
+      if (total > 0) {
+        const elapsed = formatDuration((Date.now() - startTime) / 1000);
+        process.stderr.write(`Indexing complete in ${elapsed}\n`);
+      }
+    } finally {
+      _isIndexing = false;
+    }
+  });
 }
 
-// eslint-disable-next-line @typescript-eslint/require-await
 export async function startBackgroundIndexing(contextLength: number): Promise<void> {
   const files = scanVault();
-  const fsPaths = new Set(files.map((f) => path.relative(config.vaultPath, f).normalize('NFD')));
-  cleanupStaleNotes(fsPaths);
+  const fsPaths = new Set(files.map(toVaultRelativePath));
+  await withIndexingDbLock(() => {
+    return runWithDatabaseRecovery(
+      'background stale-note cleanup',
+      () => cleanupStaleNotes(fsPaths),
+      recoverDatabaseSidecarsForIndexing,
+    );
+  });
   _totalExpected = files.length;
   _processedCount = 0;
   _indexQueue.push(...files);
-  processQueue(contextLength).catch((err) => {
+  try {
+    await processQueue(contextLength);
+  } catch (err) {
     console.warn('[indexer] background indexing error:', err);
-  });
+  }
 }
 
 const fileDelays = new Map<string, ReturnType<typeof setTimeout>>();
@@ -426,20 +688,22 @@ const pendingUnlinks = new Set<string>();
 export function startWatcher(contextLength: number): void {
   import('chokidar')
     .then(({ watch }) => {
+      let watcherPolicy = createIgnorePolicy();
       const watcher = watch(config.vaultPath, {
         ignored: (filePath: string) => {
           const base = path.basename(filePath);
+          if (base === '.gitignore') return false;
           try {
             if (statSync(filePath).isDirectory()) {
-              const rel = path.relative(config.vaultPath, filePath);
-              return isIgnored(rel + '/');
+              const rel = toVaultRelativePath(filePath);
+              return watcherPolicy.isIgnored(rel + '/');
             }
           } catch {
             // File doesn't exist — fall through to extension check below
           }
           if (!base.endsWith('.md')) return true;
-          const rel = path.relative(config.vaultPath, filePath);
-          return isIgnored(rel);
+          const rel = toVaultRelativePath(filePath);
+          return watcherPolicy.isIgnored(rel);
         },
         persistent: true,
         ignoreInitial: true,
@@ -462,8 +726,41 @@ export function startWatcher(contextLength: number): void {
         fileDelays.set(filePath, timer);
       };
 
+      const handleGitignoreChange = () => {
+        void withIndexingDbLock(async () => {
+          try {
+            watcherPolicy = createIgnorePolicy();
+            const files = scanVault();
+            const fsPaths = new Set(files.map(toVaultRelativePath));
+            await runWithDatabaseRecovery(
+              'watcher gitignore cleanup',
+              () => cleanupStaleNotes(fsPaths),
+              recoverDatabaseSidecarsForIndexing,
+            );
+            for (const file of files) {
+              const normalizedPath = path.normalize(file).normalize('NFD');
+              if (!_indexQueue.includes(normalizedPath)) {
+                _indexQueue.push(normalizedPath);
+                _totalExpected++;
+              }
+            }
+            watcher.add(config.vaultPath);
+            void processQueue(contextLength).catch((err) => {
+              console.warn('[watcher] queue processing error:', err);
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[watcher] gitignore change error: ${msg}`);
+          }
+        });
+      };
+
       const safeHandleFileChange = (filePath: string) => {
         try {
+          if (path.basename(filePath) === '.gitignore') {
+            handleGitignoreChange();
+            return;
+          }
           handleFileChange(filePath);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -474,21 +771,33 @@ export function startWatcher(contextLength: number): void {
       const safeHandleUnlink = (filePath: string) => {
         if (pendingUnlinks.has(filePath)) return;
         pendingUnlinks.add(filePath);
-        try {
-          const rel = path.relative(config.vaultPath, filePath).normalize('NFD');
-          const existing = fileDelays.get(filePath);
-          if (existing) {
-            clearTimeout(existing);
-            fileDelays.delete(filePath);
+        void withIndexingDbLock(async () => {
+          try {
+            if (path.basename(filePath) === '.gitignore') {
+              handleGitignoreChange();
+              return;
+            }
+            const rel = toVaultRelativePath(filePath);
+            const existing = fileDelays.get(filePath);
+            if (existing) {
+              clearTimeout(existing);
+              fileDelays.delete(filePath);
+            }
+            await runWithDatabaseRecovery(
+              'watcher unlink',
+              () => {
+                deleteNote(rel);
+                bumpIndexVersion();
+              },
+              recoverDatabaseSidecarsForIndexing,
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            console.warn(`[watcher] unlink error for ${filePath}: ${msg}`);
+          } finally {
+            pendingUnlinks.delete(filePath);
           }
-          deleteNote(rel);
-          bumpIndexVersion();
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[watcher] unlink error for ${filePath}: ${msg}`);
-        } finally {
-          pendingUnlinks.delete(filePath);
-        }
+        });
       };
 
       watcher.on('add', safeHandleFileChange);

@@ -22,23 +22,28 @@ import {
   applyDbConfigDefaults,
   checkModelChanged,
   getFailedChunks,
+  getDb,
   getStats,
   getStoredEmbeddingDim,
   getStoredModel,
   initVecTable,
+  isLikelyDatabaseCorruption,
   openDb,
   saveConfigMeta,
   wipeDatabaseFiles,
+  wipeDatabaseSidecars,
 } from './db.js';
 import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import {
   getIndexingStatus,
-  indexFile,
+  indexFileWithRecovery,
   indexVaultSync,
+  populateMissingMarkdownReferences,
   startBackgroundIndexing,
   startWatcher,
 } from './indexer.js';
 import { runHttpMcpServerCli } from './mcp-http-server.js';
+import { runStdioMcpServer } from './mcp-stdio-server.js';
 import { ensureMcpServer, formatMcpInfo, getMcpStatus, stopMcpServer } from './mcp-supervisor.js';
 import { isAmbiguousNotePathError, readNotes, search } from './searcher.js';
 import { handleStdioLine } from './stdio-server.js';
@@ -132,6 +137,7 @@ interface SearchOpts {
   related?: boolean;
   depth: string;
   direction?: 'outgoing' | 'backlinks' | 'both';
+  linkType?: 'wiki' | 'markdown' | 'all';
   snippetLength?: string;
   json?: boolean;
   open?: boolean;
@@ -262,10 +268,15 @@ async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
   // Check if model changed — only wipe during reindex, not during serve/search/status.
   // Wiping on serve/search would destroy the index whenever env vars are missing (e.g.
   // when Obsidian launches without shell env vars like OPENAI_BASE_URL).
-  const modelName =
-    config.apiKey || process.env.OPENAI_BASE_URL ? config.apiModel : `local:${config.localModel}`;
+  const modelName = currentModelName();
   if (allowWipe) {
-    checkModelChanged(modelName);
+    if (checkModelChanged(modelName)) {
+      saveConfigMeta({
+        vaultPath: config.vaultPath,
+        apiBaseUrl: config.apiBaseUrl,
+        apiModel: config.apiModel,
+      });
+    }
   } else {
     // Read-only path: warn if model differs but do not wipe
     const stored = getStoredModel();
@@ -301,7 +312,34 @@ async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
     primeEmbeddingDim(embeddingDim);
     initVecTable(embeddingDim);
   }
+  await populateMissingMarkdownReferences();
   return contextLength;
+}
+
+function currentModelName(): string {
+  return config.apiKey || process.env.OPENAI_BASE_URL
+    ? config.apiModel
+    : `local:${config.localModel}`;
+}
+
+function restoreDbRuntimeMetadata(modelName: string, embeddingDim: number | null): void {
+  saveConfigMeta({
+    vaultPath: config.vaultPath,
+    apiBaseUrl: config.apiBaseUrl,
+    apiModel: config.apiModel,
+  });
+  getDb()
+    .prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('embedding_model', ?)")
+    .run(modelName);
+  if (embeddingDim !== null) {
+    initVecTable(embeddingDim);
+  }
+}
+
+function recoverDbSidecarsForReindex(modelName: string, embeddingDim: number | null): void {
+  wipeDatabaseSidecars();
+  openDb();
+  restoreDbRuntimeMetadata(modelName, embeddingDim);
 }
 
 /** Color-code a score value based on relevance thresholds. */
@@ -443,6 +481,13 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 });
 
 program
+  .command('mcp')
+  .description('Start the MCP server over stdio')
+  .action(async () => {
+    await runStdioMcpServer();
+  });
+
+program
   .command('search [queries...]', { isDefault: true })
   .description('Search the vault (default command). Pass multiple queries for fan-out search.')
   .option(
@@ -492,6 +537,7 @@ program
     '--direction <direction>',
     'Direction for --related: outgoing|backlinks|both (default: both)',
   )
+  .option('--link-type <type>', 'Graph type for --related: wiki|markdown|all (default: wiki)')
   .option('--snippet-length <n>', 'Max snippet length in characters (default: 300)')
   .option('--json', 'Output as JSON')
   .option('--only-paths', 'Output note paths one per line (for use in pipes)')
@@ -539,6 +585,14 @@ program
         opts.snippetLength !== undefined
           ? parseCliIntegerOption('--snippet-length', opts.snippetLength, { min: 0 })
           : undefined;
+      if (
+        opts.linkType !== undefined &&
+        opts.linkType !== 'wiki' &&
+        opts.linkType !== 'markdown' &&
+        opts.linkType !== 'all'
+      ) {
+        throw new Error('Invalid --link-type: expected wiki, markdown, or all');
+      }
     } catch (err) {
       failCliValidation(err);
     }
@@ -557,6 +611,7 @@ program
         related: opts.related ?? false,
         depth,
         direction: opts.direction,
+        linkType: opts.linkType,
         snippetLength,
         notePath: opts.path,
         rerank: opts.rerank ?? false,
@@ -622,14 +677,15 @@ program
     if (!filePath && !existsSync(config.dbPath)) {
       opts.force = true;
     }
-    if (opts.force && !filePath) {
-      wipeDatabaseFiles();
-    }
-    const contextLength = await init({ allowWipe: true });
 
     if (filePath) {
+      const contextLength = await init({ allowWipe: false });
       const fullPath = path.join(config.vaultPath, filePath);
-      const status = await indexFile(fullPath, contextLength, opts.force);
+      const modelName = currentModelName();
+      const embeddingDim = getStoredEmbeddingDim();
+      const status = await indexFileWithRecovery(fullPath, contextLength, opts.force, () =>
+        recoverDbSidecarsForReindex(modelName, embeddingDim),
+      );
       console.log(
         JSON.stringify(
           status === 'indexed'
@@ -652,7 +708,26 @@ program
       );
     } else {
       const header = opts.force ? 'Recreating database and indexing vault...' : 'Indexing vault...';
-      await indexVaultSync(opts.force, header);
+      const modelName = currentModelName();
+      if (opts.force) {
+        wipeDatabaseFiles();
+      }
+      try {
+        await init({ allowWipe: true });
+      } catch (err) {
+        if (!isLikelyDatabaseCorruption(err)) {
+          throw err;
+        }
+        process.stderr.write(
+          '[auto-heal] SQLite index corruption detected during startup; removing WAL/SHM sidecars and retrying.\n',
+        );
+        wipeDatabaseSidecars();
+        await init({ allowWipe: true });
+      }
+      const embeddingDim = getStoredEmbeddingDim();
+      await indexVaultSync(Boolean(opts.force), header, {
+        recoverDatabase: () => recoverDbSidecarsForReindex(modelName, embeddingDim),
+      });
     }
   });
 
@@ -689,6 +764,8 @@ program
           ? { version_check: 'offline' }
           : {}),
       ignore_patterns: config.ignorePatterns,
+      respect_gitignore: config.respectGitignore,
+      include_patterns: config.includePatterns,
     };
     if (opts.recent) {
       output.recent_activity = stats.recentActivity;

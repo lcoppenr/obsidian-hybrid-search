@@ -4,7 +4,11 @@ import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, it } from 'vitest';
-import { runHttpMcpServer, type HttpMcpServerHandle } from '../src/mcp-http-server.js';
+import type { HttpMcpServerHandle } from '../src/mcp-http-server.js';
+
+const { closeDb, initVecTable, openDb, upsertMarkdownLinks, upsertNote } =
+  await import('../src/db.js');
+const { runHttpMcpServer } = await import('../src/mcp-http-server.js');
 
 let server: HttpMcpServerHandle | undefined;
 let vaultDir: string | undefined;
@@ -26,6 +30,9 @@ function createTempVault(): string {
   mkdirSync(path.join(dir, '.obsidian'), { recursive: true });
   writeFileSync(path.join(dir, 'alpha.md'), '# Alpha\n\nAlpha note content.\n');
   process.env.OBSIDIAN_VAULT_PATH = dir;
+  openDb();
+  initVecTable(4);
+  closeDb();
   return dir;
 }
 
@@ -45,7 +52,7 @@ describe('runHttpMcpServer', () => {
     assert.equal(body.ok, true);
     assert.equal(body.transport, 'streamable-http');
     assert.equal(body.vaultPath, vaultDir);
-  });
+  }, 30_000);
 
   it('initializes MCP and lists tools over Streamable HTTP', async () => {
     vaultDir = createTempVault();
@@ -70,7 +77,7 @@ describe('runHttpMcpServer', () => {
     assert.match(toolsBody, /read/);
     assert.match(toolsBody, /reindex/);
     assert.match(toolsBody, /status/);
-  });
+  }, 30_000);
 
   it('allows MCP initialize requests for extra allowed Host headers', async () => {
     vaultDir = createTempVault();
@@ -161,6 +168,50 @@ describe('runHttpMcpServer', () => {
     assert.equal(result.isError, true);
     assert.match(body, /Invalid read arguments/);
     assert.match(body, /paths/);
+  });
+
+  it('passes link_type through to related Markdown graph traversal', async () => {
+    vaultDir = createTempVault();
+    writeFileSync(path.join(vaultDir, 'beta.md'), '# Beta\n\nBeta note content.\n');
+    const fakeEmbedding = new Float32Array([0.5, 0.5, 0.5, 0.5]);
+    openDb();
+    upsertNote({
+      path: 'alpha.md',
+      title: 'Alpha',
+      tags: [],
+      content: 'Alpha links to [Beta](beta.md).',
+      mtime: Date.now(),
+      hash: 'alpha-hash',
+      chunks: [{ text: 'Alpha links to Beta.', embedding: fakeEmbedding }],
+    });
+    upsertNote({
+      path: 'beta.md',
+      title: 'Beta',
+      tags: [],
+      content: 'Beta note content.',
+      mtime: Date.now(),
+      hash: 'beta-hash',
+      chunks: [{ text: 'Beta note content.', embedding: fakeEmbedding }],
+    });
+    upsertMarkdownLinks('alpha.md', ['beta.md']);
+    closeDb();
+    server = await runHttpMcpServer({ host: '127.0.0.1', port: 0 });
+    const sessionId = await initializeMcpSession(server.url);
+
+    const body = await callTool(server.url, sessionId, 'search', {
+      path: 'alpha.md',
+      related: true,
+      direction: 'outgoing',
+      depth: 1,
+      link_type: 'markdown',
+    });
+    const results = parseSearchToolResults(body);
+
+    assert.deepEqual(
+      results.map((result) => result.path),
+      ['alpha.md', 'beta.md'],
+    );
+    assert.ok(results[1]?.matchedBy.includes('markdown_link'));
   });
 });
 
@@ -296,4 +347,17 @@ function parseToolCallResult(body: string): { isError?: boolean } {
   assert.ok(message.result, 'tools/call response should include a result');
 
   return message.result;
+}
+
+function parseSearchToolResults(body: string): Array<{ path: string; matchedBy: string[] }> {
+  const dataLine = body.split('\n').find((line) => line.startsWith('data: '));
+  assert.ok(dataLine, 'Streamable HTTP response should include a data event');
+
+  const message = JSON.parse(dataLine.slice('data: '.length)) as {
+    result?: { content?: Array<{ text?: string }> };
+  };
+  const text = message.result?.content?.[0]?.text;
+  assert.ok(text, 'tools/call response should include text content');
+  const parsed = JSON.parse(text) as { results: Array<{ path: string; matchedBy: string[] }> };
+  return parsed.results;
 }

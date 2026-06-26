@@ -2,13 +2,19 @@
 
 [![npm version](https://img.shields.io/npm/v/obsidian-hybrid-search)](https://www.npmjs.com/package/obsidian-hybrid-search)
 [![Tests](https://github.com/flowing-abyss/obsidian-hybrid-search/actions/workflows/ci.yml/badge.svg)](https://github.com/flowing-abyss/obsidian-hybrid-search/actions)
-[![Downloads](https://img.shields.io/npm/dw/obsidian-hybrid-search)](https://www.npmjs.com/package/obsidian-hybrid-search)
+[![Total downloads](https://badgen.net/npm/dt/obsidian-hybrid-search)](https://www.npmjs.com/package/obsidian-hybrid-search)
 
-An [MCP server](https://modelcontextprotocol.io) and CLI tool that makes your Obsidian vault queryable by AI assistants. Indexes notes into SQLite with FTS5 full-text search, trigram fuzzy matching, and `sqlite-vec` vector similarity — results are merged with Reciprocal Rank Fusion (RRF) and scored 0–1.
+<p align="center">
+  <img src="assets/banner.png" alt="Obsidian Hybrid Search explains hybrid retrieval from Obsidian notes" />
+</p>
 
-Once connected, any MCP-compatible AI assistant can answer questions grounded in your actual notes: finding knowledge by meaning, exact phrase, or title; traversing the wikilink graph; filtering by tag or folder; always citing the source note. No guessing from training data, no manual copy-paste.
+Your Obsidian vault already contains your best thinking. Obsidian Hybrid Search makes that thinking easier to find, reuse, and bring into AI-assisted work.
 
-No external services required. A bundled `@huggingface/transformers` model handles embeddings locally by default. Any OpenAI-compatible API (OpenRouter, Ollama, LM Studio) works as a drop-in replacement.
+It gives your vault one retrieval engine and three practical ways to use it. The native [Obsidian plugin][obsidian-plugin] gives you fast search, previews, similar notes, link discovery, and graph views while you write. The MCP server lets AI agents search and read your notes as tool calls. The CLI gives power users the same engine for indexing, filtering, reranking, reading, and scripting.
+
+The search understands how real vaults are built. It combines semantic search, BM25 full text, fuzzy title and alias matching, tags, folders, frontmatter, wikilinks, backlinks, and similar-note lookup. You can search by idea, phrase, title, relationship, or metadata without remembering the exact words you wrote.
+
+That turns Obsidian into a stronger personal knowledge system and a better starting point for AI work. Agents can begin from your own notes, pull cited context from source files, follow related material, and work with knowledge you already trust. OHS runs locally by default with SQLite, FTS5, `sqlite-vec`, RRF ranking, and optional OpenAI-compatible embedding APIs.
 
 ## Search quality
 
@@ -252,6 +258,12 @@ obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --direction ou
 # Only backlinks (who references this note)
 obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --direction backlinks
 
+# Traverse standard Markdown note links instead of Obsidian wikilinks
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --link-type markdown
+
+# Traverse both wikilinks and standard Markdown note links
+obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --link-type all
+
 # Longer context around each link
 obsidian-hybrid-search --path notes/pkm/zettelkasten.md --related --snippet-length 500
 
@@ -412,7 +424,9 @@ Uses the built-in `Xenova/multilingual-e5-small` model — works fully offline, 
       "env": {
         "OBSIDIAN_VAULT_PATH": "/path/to/your/vault",
         "OBSIDIAN_PREFIX": "myvault_",
+        "OBSIDIAN_RESPECT_GITIGNORE": "true",
         "OBSIDIAN_IGNORE_PATTERNS": ".obsidian/**,templates/**,*.canvas",
+        "OBSIDIAN_INCLUDE_PATTERNS": "private/notes/**",
         "OPENAI_API_KEY": "sk-or-v1-...",
         "OPENAI_BASE_URL": "https://openrouter.ai/api/v1",
         "OPENAI_EMBEDDING_MODEL": "openai/text-embedding-3-small"
@@ -476,20 +490,24 @@ If `OBSIDIAN_PREFIX` is set, tool names are prefixed in the MCP list (for exampl
 
 ## Configuration
 
-| Environment variable       | Default                              | Description                                                                        |
-| -------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
-| `OBSIDIAN_VAULT_PATH`      | Required for MCP; CLI auto-detects   | Absolute path to your vault                                                        |
-| `OBSIDIAN_PREFIX`          | `""`                                 | Optional MCP tool prefix, e.g. `myvault_` → `myvault_search`, `myvault_read`       |
-| `OBSIDIAN_IGNORE_PATTERNS` | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                    |
-| `OPENAI_API_KEY`           | —                                    | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio) |
-| `OPENAI_BASE_URL`          | `https://api.openai.com/v1`          | API base URL                                                                       |
-| `OPENAI_EMBEDDING_MODEL`   | `text-embedding-3-small`             | Embedding model name                                                               |
+| Environment variable         | Default                              | Description                                                                        |
+| ---------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------- |
+| `OBSIDIAN_VAULT_PATH`        | Required for MCP; CLI auto-detects   | Absolute path to your vault                                                        |
+| `OBSIDIAN_PREFIX`            | `""`                                 | Optional MCP tool prefix, e.g. `myvault_` → `myvault_search`, `myvault_read`       |
+| `OBSIDIAN_IGNORE_PATTERNS`   | `.obsidian/**,templates/**,*.canvas` | Comma-separated ignore patterns                                                    |
+| `OBSIDIAN_RESPECT_GITIGNORE` | `true`                               | Read root and nested `.gitignore` files; set to `false` to disable                 |
+| `OBSIDIAN_INCLUDE_PATTERNS`  | `""`                                 | Comma-separated patterns to re-include notes ignored only by `.gitignore`          |
+| `OPENAI_API_KEY`             | —                                    | API key; omit to use local model embeddings or keyless servers (Ollama, LM Studio) |
+| `OPENAI_BASE_URL`            | `https://api.openai.com/v1`          | API base URL                                                                       |
+| `OPENAI_EMBEDDING_MODEL`     | `text-embedding-3-small`             | Embedding model name                                                               |
 
 ### Ignore patterns
 
 - `folder/**` — ignore a directory and all its contents
 - `*.canvas` — ignore by extension
 - `exact/path.md` — ignore a specific file
+
+Root and nested `.gitignore` files are respected by default. Set `OBSIDIAN_RESPECT_GITIGNORE=false` to disable this. Use `OBSIDIAN_INCLUDE_PATTERNS` to re-include Markdown notes that are ignored only by `.gitignore`; include patterns do not override `OBSIDIAN_IGNORE_PATTERNS` or internal exclusions.
 
 The ignore configuration is persisted in the database, so it is restored automatically even if the environment variable is missing on restart.
 
@@ -513,3 +531,5 @@ Tests use fake embeddings (no API key required) and run against a temporary vaul
 ## License
 
 MIT
+
+[obsidian-plugin]: https://community.obsidian.md/plugins/hybrid-search

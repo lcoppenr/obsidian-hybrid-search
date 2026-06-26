@@ -14,9 +14,11 @@ coverage/
 .claude/settings.local.json
 AGENTS.md
 .vscode/
+.opencode/
 .agents/
 .claude/
 .codex/
+.opencode/
 .pi/
 .pi-lens/
 .a5c/

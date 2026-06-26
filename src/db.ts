@@ -3,11 +3,34 @@ import { statSync, unlinkSync } from 'node:fs';
 import * as sqliteVec from 'sqlite-vec';
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 import { config } from './config.js';
-import { isIgnored } from './ignore.js';
+import { getIgnoreSignature, isIgnored } from './ignore.js';
 
 type DB = InstanceType<typeof Database>;
 
 let _db: DB | null = null;
+
+const CORRUPTION_CODES = new Set(['SQLITE_CORRUPT', 'SQLITE_CORRUPT_VTAB', 'SQLITE_NOTADB']);
+const NON_CORRUPTION_CODES = new Set(['SQLITE_BUSY', 'SQLITE_LOCKED']);
+const CORRUPTION_MESSAGE_RE =
+  /database disk image is malformed|file is not a database|malformed database schema|database corruption|database is corrupt/i;
+const NON_CORRUPTION_MESSAGE_RE =
+  /database is locked|database table is locked|SQLITE_BUSY|SQLITE_LOCKED/i;
+
+function errorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object' || !('code' in err)) return undefined;
+  const code = (err as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+export function isLikelyDatabaseCorruption(err: unknown): boolean {
+  const code = errorCode(err);
+  if (code && NON_CORRUPTION_CODES.has(code)) return false;
+  if (code && CORRUPTION_CODES.has(code)) return true;
+
+  const message = err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
+  if (NON_CORRUPTION_MESSAGE_RE.test(message)) return false;
+  return CORRUPTION_MESSAGE_RE.test(message);
+}
 
 function normalizeAlias(alias: string): string {
   return alias.normalize('NFD').toLowerCase();
@@ -226,6 +249,19 @@ function runMigrations(db: DB): void {
       PRIMARY KEY (from_path, to_path)
     );
 
+    CREATE TABLE IF NOT EXISTS markdown_links (
+      from_path TEXT NOT NULL,
+      to_path   TEXT NOT NULL,
+      PRIMARY KEY (from_path, to_path)
+    );
+
+    CREATE TABLE IF NOT EXISTS note_urls (
+      from_path TEXT NOT NULL,
+      url       TEXT NOT NULL,
+      position  INTEGER NOT NULL,
+      PRIMARY KEY (from_path, url)
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
       value TEXT
@@ -243,6 +279,7 @@ function runMigrations(db: DB): void {
   // links(from_path, to_path) is already covered by the PRIMARY KEY.
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_links_to ON links(to_path);
+    CREATE INDEX IF NOT EXISTS idx_markdown_links_to ON markdown_links(to_path);
     CREATE INDEX IF NOT EXISTS idx_chunks_note_chunk_index ON chunks(note_id, chunk_index);
   `);
 
@@ -452,6 +489,11 @@ function cleanupNfcPaths(db: DB): void {
       db.prepare('DELETE FROM chunks WHERE note_id = ?').run(note.id);
       deleteChildRows(db, note.id);
       db.prepare('DELETE FROM links WHERE from_path = ? OR to_path = ?').run(note.path, note.path);
+      db.prepare('DELETE FROM markdown_links WHERE from_path = ? OR to_path = ?').run(
+        note.path,
+        note.path,
+      );
+      db.prepare('DELETE FROM note_urls WHERE from_path = ?').run(note.path);
       db.prepare('DELETE FROM notes WHERE id = ?').run(note.id);
     }
   }
@@ -474,20 +516,42 @@ function restoreIgnorePatterns(db: DB): void {
 }
 
 export function openDb(): DB {
+  closeDb();
+  try {
+    return openDbOnce();
+  } catch (err) {
+    if (!isLikelyDatabaseCorruption(err)) throw err;
+    wipeDatabaseSidecars();
+    return openDbOnce();
+  }
+}
+
+function openDbOnce(): DB {
   const db = new Database(config.dbPath);
-  sqliteVec.load(db);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  runMigrations(db);
-  cleanupNfcPaths(db);
-  restoreIgnorePatterns(db);
-  _db = db;
-  return db;
+  try {
+    sqliteVec.load(db);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+    runMigrations(db);
+    cleanupNfcPaths(db);
+    restoreIgnorePatterns(db);
+    _db = db;
+    return db;
+  } catch (err) {
+    db.close();
+    throw err;
+  }
 }
 
 export function getDb(): DB {
   if (!_db) throw new Error('Database not initialized. Call openDb() first.');
   return _db;
+}
+
+export function closeDb(): void {
+  if (!_db) return;
+  _db.close();
+  _db = null;
 }
 
 /**
@@ -496,17 +560,27 @@ export function getDb(): DB {
  * After this call _db is null — caller must openDb() before using the DB again.
  */
 export function wipeDatabaseFiles(): void {
-  if (_db) {
-    _db.close();
-    _db = null;
-  }
+  closeDb();
   const dbPath = config.dbPath;
   for (const ext of ['', '-shm', '-wal']) {
-    try {
-      unlinkSync(dbPath + ext);
-    } catch {
-      // File doesn't exist — ok
-    }
+    unlinkIfExists(dbPath + ext);
+  }
+}
+
+export function wipeDatabaseSidecars(): void {
+  closeDb();
+  const dbPath = config.dbPath;
+  for (const ext of ['-shm', '-wal']) {
+    unlinkIfExists(dbPath + ext);
+  }
+}
+
+function unlinkIfExists(filePath: string): void {
+  try {
+    unlinkSync(filePath);
+  } catch (err) {
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') return;
+    throw err;
   }
 }
 
@@ -789,7 +863,12 @@ export function deleteNote(notePath: string, keepLinks = false): void {
 
   if (!keepLinks) {
     db.prepare('DELETE FROM links WHERE from_path = ? OR to_path = ?').run(notePath, notePath);
+    db.prepare('DELETE FROM markdown_links WHERE from_path = ? OR to_path = ?').run(
+      notePath,
+      notePath,
+    );
   }
+  db.prepare('DELETE FROM note_urls WHERE from_path = ?').run(notePath);
   db.prepare('DELETE FROM notes WHERE id = ?').run(note.id);
   logEvent('deleted', notePath);
   bumpDbVersion();
@@ -864,6 +943,86 @@ export function upsertLinks(fromPath: string, toPaths: string[]): void {
   for (const toPath of toPaths) {
     insert.run(fromPath, toPath);
   }
+}
+
+export function upsertMarkdownLinks(fromPath: string, toPaths: string[]): void {
+  const db = getDb();
+  db.prepare('DELETE FROM markdown_links WHERE from_path = ?').run(fromPath);
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO markdown_links (from_path, to_path) VALUES (?, ?)',
+  );
+  for (const toPath of toPaths) {
+    insert.run(fromPath, toPath);
+  }
+}
+
+export function upsertNoteUrls(fromPath: string, urls: string[]): void {
+  const db = getDb();
+  db.prepare('DELETE FROM note_urls WHERE from_path = ?').run(fromPath);
+  const insert = db.prepare(
+    'INSERT OR IGNORE INTO note_urls (from_path, url, position) VALUES (?, ?, ?)',
+  );
+  const seen = new Set<string>();
+  let position = 0;
+  for (const url of urls) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    insert.run(fromPath, url, position);
+    position++;
+  }
+}
+
+export function getMarkdownLinksForPaths(paths: string[]): {
+  links: Map<string, string[]>;
+  backlinks: Map<string, string[]>;
+} {
+  const links = new Map<string, string[]>();
+  const backlinks = new Map<string, string[]>();
+  for (const path of paths) {
+    links.set(path, []);
+    backlinks.set(path, []);
+  }
+  if (paths.length === 0) return { links, backlinks };
+
+  const db = getDb();
+  const placeholders = paths.map(() => '?').join(', ');
+  const outgoing = db
+    .prepare(
+      `SELECT from_path, to_path FROM markdown_links WHERE from_path IN (${placeholders}) ORDER BY from_path ASC, to_path ASC`,
+    )
+    .all(...paths) as { from_path: string; to_path: string }[];
+  for (const { from_path, to_path } of outgoing) {
+    links.get(from_path)!.push(to_path);
+  }
+
+  const incoming = db
+    .prepare(
+      `SELECT from_path, to_path FROM markdown_links WHERE to_path IN (${placeholders}) ORDER BY to_path ASC, from_path ASC`,
+    )
+    .all(...paths) as { from_path: string; to_path: string }[];
+  for (const { from_path, to_path } of incoming) {
+    backlinks.get(to_path)!.push(from_path);
+  }
+
+  return { links, backlinks };
+}
+
+export function getUrlsForPaths(paths: string[]): Map<string, string[]> {
+  const urls = new Map<string, string[]>();
+  for (const path of paths) urls.set(path, []);
+  if (paths.length === 0) return urls;
+
+  const db = getDb();
+  const placeholders = paths.map(() => '?').join(', ');
+  const rows = db
+    .prepare(
+      `SELECT from_path, url FROM note_urls WHERE from_path IN (${placeholders}) ORDER BY from_path ASC, position ASC, url ASC`,
+    )
+    .all(...paths) as { from_path: string; url: string }[];
+  for (const { from_path, url } of rows) {
+    urls.get(from_path)!.push(url);
+  }
+  return urls;
 }
 
 export function getLinksForPaths(paths: string[]): {
@@ -1152,19 +1311,33 @@ export function getFailedChunks(limit = 100): FailedChunk[] {
  * Returns paths of notes that should be removed because they now match ignore patterns.
  * Stores new patterns in settings. Returns empty array if patterns unchanged.
  */
-export function getPathsToRemoveForIgnoreChange(patterns: string[]): string[] {
+export function getPathsToRemoveForIgnoreChange(
+  patterns: string[],
+  signature = getIgnoreSignature(),
+  isIgnoredPath: (path: string) => boolean = isIgnored,
+): string[] {
   const db = getDb();
-  const key = 'ignore_patterns';
-  const stored = db.prepare(`SELECT value FROM settings WHERE key = '${key}'`).get() as
+  const patternsKey = 'ignore_patterns';
+  const signatureKey = 'ignore_state_signature';
+  const storedPatterns = db
+    .prepare(`SELECT value FROM settings WHERE key = '${patternsKey}'`)
+    .get() as { value: string } | undefined;
+  const stored = db.prepare(`SELECT value FROM settings WHERE key = '${signatureKey}'`).get() as
     | { value: string }
     | undefined;
-  const newJson = JSON.stringify([...patterns].sort((a, b) => a.localeCompare(b)));
+  const storedSignature = storedPatterns ? stored : undefined;
+  const patternsJson = JSON.stringify([...patterns].sort((a, b) => a.localeCompare(b)));
 
-  if (stored && stored.value === newJson) return [];
+  if (storedSignature && storedSignature.value === signature) return [];
 
-  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${key}', ?)`).run(newJson);
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${patternsKey}', ?)`).run(
+    patternsJson,
+  );
+  db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES ('${signatureKey}', ?)`).run(
+    signature,
+  );
 
-  if (!stored) {
+  if (!storedSignature) {
     // No stored patterns — check if DB has notes
     // If yes, this is a "reset" scenario, need to filter by new patterns
     // If no, this is truly a first run
@@ -1175,7 +1348,7 @@ export function getPathsToRemoveForIgnoreChange(patterns: string[]): string[] {
   // Return all DB paths that match the new ignore patterns
   const allPaths = (db.prepare('SELECT path FROM notes').all() as { path: string }[])
     .map((r) => r.path)
-    .filter((p) => isIgnored(p));
+    .filter((p) => isIgnoredPath(p));
   return allPaths;
 }
 
