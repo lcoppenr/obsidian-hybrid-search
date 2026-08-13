@@ -67,60 +67,69 @@ describe('search — scope filtering edge cases', () => {
     });
   });
 
-  it('single include scope matches path prefix', async () => {
-    const results = await search('content', { mode: 'fulltext', scope: 'notes', limit: 100 });
-    assert.ok(results.some((r) => r.path === 'notes/foo.md'));
-    assert.ok(!results.some((r) => r.path === 'daily/bar.md'));
-  });
-
-  it('scope with trailing slash works same as without', async () => {
-    const results = await search('content', { mode: 'fulltext', scope: 'notes/', limit: 100 });
-    assert.ok(results.some((r) => r.path === 'notes/foo.md'));
-  });
-
-  it('multiple includes use OR logic', async () => {
-    const results = await search('content', {
-      mode: 'fulltext',
+  const scopeCases: {
+    name: string;
+    scope: string | string[];
+    present: string[];
+    absent: string[];
+  }[] = [
+    {
+      name: 'single include scope matches path prefix',
+      scope: 'notes',
+      present: ['notes/foo.md'],
+      absent: ['daily/bar.md'],
+    },
+    {
+      name: 'scope with trailing slash works same as without',
+      scope: 'notes/',
+      present: ['notes/foo.md'],
+      absent: [],
+    },
+    {
+      name: 'multiple includes use OR logic',
       scope: ['notes', 'daily'],
-      limit: 100,
-    });
-    assert.ok(results.some((r) => r.path === 'notes/foo.md'));
-    assert.ok(results.some((r) => r.path === 'daily/bar.md'));
-  });
-
-  it('exclude scope removes matching paths', async () => {
-    const results = await search('content', {
-      mode: 'fulltext',
+      present: ['notes/foo.md', 'daily/bar.md'],
+      absent: [],
+    },
+    {
+      name: 'exclude scope removes matching paths',
       scope: '-notes-old',
-      limit: 100,
-    });
-    assert.ok(!results.some((r) => r.path === 'notes-old/baz.md'));
-  });
-
-  it('scope with trailing slash enforces directory boundary', async () => {
-    const results = await search('content', { mode: 'fulltext', scope: 'notes/', limit: 100 });
-    assert.ok(results.some((r) => r.path === 'notes/foo.md'));
-    assert.ok(!results.some((r) => r.path === 'notes-old/baz.md'));
-  });
-
-  it('bare scope prefix enforces directory boundary (no false match on sibling dirs)', async () => {
-    // 'notes' (no trailing slash) should match 'notes/foo.md' but NOT 'notes-old/baz.md'.
-    // The scope filter treats a bare prefix as a directory name, so 'notes' must not
-    // match 'notes-old' — only paths that are exactly 'notes' or begin with 'notes/'.
-    const results = await search('content', { mode: 'fulltext', scope: 'notes', limit: 100 });
-    assert.ok(results.some((r) => r.path === 'notes/foo.md'));
-    assert.ok(!results.some((r) => r.path === 'notes-old/baz.md'));
-  });
-
-  it('nested scope prefix matches only notes under that subdirectory', async () => {
-    const results = await search('content', {
-      mode: 'fulltext',
+      present: [],
+      absent: ['notes-old/baz.md'],
+    },
+    {
+      name: 'scope with trailing slash enforces directory boundary',
+      scope: 'notes/',
+      present: ['notes/foo.md'],
+      absent: ['notes-old/baz.md'],
+    },
+    // A bare prefix is treated as a directory name, so 'notes' must not match
+    // 'notes-old' — only paths that are exactly 'notes' or begin with 'notes/'.
+    {
+      name: 'bare scope prefix enforces directory boundary (no false match on sibling dirs)',
+      scope: 'notes',
+      present: ['notes/foo.md'],
+      absent: ['notes-old/baz.md'],
+    },
+    {
+      name: 'nested scope prefix matches only notes under that subdirectory',
       scope: 'notes/deep',
-      limit: 100,
-    });
-    assert.ok(results.some((r) => r.path === 'notes/deep/scoped.md'));
-    assert.ok(!results.some((r) => r.path === 'notes/foo.md'));
-    assert.ok(!results.some((r) => r.path === 'notes-old/baz.md'));
+      present: ['notes/deep/scoped.md'],
+      absent: ['notes/foo.md', 'notes-old/baz.md'],
+    },
+  ];
+
+  it.each(scopeCases)('$name', async ({ scope, present, absent }) => {
+    const results = await search('content', { mode: 'fulltext', scope, limit: 100 });
+    for (const path of present) {
+      assert.ok(
+        results.some((r) => r.path === path),
+        `expected ${path} in results`,
+      );
+    }
+    for (const path of absent) {
+      assert.ok(!results.some((r) => r.path === path), `did not expect ${path} in results`);
+    }
   });
 });
 
@@ -423,6 +432,38 @@ describe('search — filter-only mode (empty query + filters)', () => {
   it('limit=0 returns all matches without slicing', async () => {
     const results = await search('', { tag: 'todo', limit: 0 });
     assert.ok(results.length > 0);
+  });
+
+  // limit=0 means "no limit" in filter-only mode. It must mean the same thing on
+  // every other path, otherwise a saved filter carrying limit:0 (a real user
+  // pattern) silently returns nothing the moment it is combined with @sim or a
+  // text query — indistinguishable from "no matches".
+  it('limit=0 returns results for a path lookup combined with a filter', async () => {
+    const results = await search('', { notePath: 'fm-a.md', tag: 'todo', limit: 0 });
+    assert.ok(results.length > 0, 'limit=0 must not truncate a filtered path lookup to nothing');
+  });
+
+  it('limit=0 returns results for an unfiltered path lookup', async () => {
+    const baseline = await search('', { notePath: 'fm-a.md', limit: 5 });
+    assert.ok(baseline.length > 0, 'fixture sanity: the path lookup finds neighbours at limit 5');
+    const results = await search('', { notePath: 'fm-a.md', limit: 0 });
+    assert.ok(results.length > 0, 'limit=0 must not truncate a path lookup to nothing');
+  });
+
+  // sqlite-vec caps a KNN `k` at 4096 and throws above it; searchVector binds
+  // k = limit * 5, so every search with limit > 819 used to come back empty on
+  // every vault, silently, because the error was swallowed into [].
+  it('a limit far above the sqlite-vec k ceiling still returns results', async () => {
+    const results = await search('', { notePath: 'fm-a.md', limit: 5000 });
+    assert.ok(
+      results.length > 0,
+      'k must be clamped to the sqlite-vec ceiling, not passed through',
+    );
+  });
+
+  it('limit=0 returns results for a text query', async () => {
+    const results = await search('filter', { limit: 0 });
+    assert.ok(results.length > 0, 'limit=0 must not truncate a text search to nothing');
   });
 });
 

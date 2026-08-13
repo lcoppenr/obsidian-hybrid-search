@@ -1,6 +1,4 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { randomUUID } from 'node:crypto';
 import http, {
   type IncomingMessage,
   type Server as NodeHttpServer,
@@ -27,16 +25,10 @@ export interface HttpMcpServerHandle {
   close(): Promise<void>;
 }
 
-interface McpSession {
-  transport: StreamableHTTPServerTransport;
-  server: ReturnType<typeof createMcpServer>;
-}
-
 export async function runHttpMcpServer(
   options: HttpMcpServerOptions,
 ): Promise<HttpMcpServerHandle> {
   const runtime = await createMcpRuntime();
-  const sessions = new Map<string, McpSession>();
   let actualPort = options.port;
 
   const nodeServer = http.createServer((req, res) => {
@@ -69,42 +61,24 @@ export async function runHttpMcpServer(
       return;
     }
 
-    const sessionId = req.headers['mcp-session-id'];
-    if (typeof sessionId === 'string') {
-      const session = sessions.get(sessionId);
-      if (!session) {
-        writeJson(res, 404, { error: 'unknown MCP session' });
-        return;
-      }
-      await session.transport.handleRequest(req, res);
-      return;
-    }
-
     if (req.method !== 'POST') {
-      writeJson(res, 400, { error: 'missing MCP session id' });
-      return;
-    }
-
-    const body = await readJsonBody(req);
-    if (!isInitializeRequest(body)) {
-      writeJson(res, 400, { error: 'missing MCP session id' });
+      // Stateless Streamable HTTP only answers POST: there is no SSE stream to
+      // GET and no session to DELETE. RFC 9110 requires Allow on every 405.
+      writeJson(res, 405, { error: 'method not allowed' }, { allow: 'POST' });
       return;
     }
 
     const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (initializedSessionId) => {
-        sessions.set(initializedSessionId, { transport, server: mcpServer });
-      },
-      onsessionclosed: (closedSessionId) => {
-        sessions.delete(closedSessionId);
-      },
+      sessionIdGenerator: undefined,
       enableDnsRebindingProtection: options.allowAnyHost !== true,
       allowedHosts: allowedHosts(options.host, actualPort, options.allowedHosts),
     });
     const mcpServer = createMcpServer(runtime);
+    res.once('close', () => {
+      void Promise.allSettled([transport.close(), mcpServer.close()]);
+    });
     await mcpServer.connect(transport);
-    await transport.handleRequest(req, res, body);
+    await transport.handleRequest(req, res);
   }
 
   await listen(nodeServer, options.host, options.port);
@@ -125,8 +99,6 @@ export async function runHttpMcpServer(
     url,
     healthUrl: `http://${options.host}:${actualPort}/health`,
     close: async () => {
-      await Promise.allSettled([...sessions.values()].map((session) => session.server.close()));
-      sessions.clear();
       await closeNodeServer(nodeServer);
       closeDb();
     },
@@ -176,9 +148,14 @@ function closeNodeServer(server: NodeHttpServer): Promise<void> {
   });
 }
 
-function writeJson(res: ServerResponse, status: number, body: unknown): void {
+function writeJson(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  extraHeaders: Record<string, string> = {},
+): void {
   if (res.headersSent) return;
-  res.writeHead(status, { 'content-type': 'application/json' });
+  res.writeHead(status, { 'content-type': 'application/json', ...extraHeaders });
   res.end(JSON.stringify(body));
 }
 
@@ -225,12 +202,4 @@ function hasExplicitPort(host: string): boolean {
   if (host.startsWith('[')) return /\]:\d+$/.test(host);
   const colonMatches = host.match(/:/g);
   return colonMatches?.length === 1 && /:\d+$/.test(host);
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  let raw = '';
-  for await (const chunk of req) {
-    raw += chunk;
-  }
-  return JSON.parse(raw) as unknown;
 }

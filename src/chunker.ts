@@ -1,11 +1,49 @@
 import { config } from './config.js';
 
-interface Chunk {
+export interface Chunk {
   text: string;
   headingChain: string[];
   charStart: number;
   charEnd: number;
 }
+
+export type ProjectedTokenCounter = (text: string, headingChain: readonly string[]) => number;
+
+declare const CHUNK_BOUNDARY_INDEX_BRAND: unique symbol;
+
+export interface ChunkBoundaryIndex {
+  readonly sourceLength: number;
+  readonly [CHUNK_BOUNDARY_INDEX_BRAND]: true;
+}
+
+export interface ChunkBoundaryIndexStats {
+  collections: number;
+  boundaryCount: number;
+  boundaryVisits: number;
+}
+
+interface Boundary {
+  position: number;
+  priority: number;
+}
+
+interface ChunkBoundaryIndexState {
+  source: string;
+  boundaries: Boundary[];
+  boundaryVisits: number;
+}
+
+const boundaryIndexStates = new WeakMap<ChunkBoundaryIndex, ChunkBoundaryIndexState>();
+
+const BOUNDARY_PRIORITY = {
+  CODE_POINT: 0,
+  WHITESPACE: 1,
+  SENTENCE: 2,
+  LINE_END: 3,
+  MARKDOWN_LINE: 4,
+  REFERENCE: 5,
+  BLANK_LINE: 6,
+} as const;
 
 const SKIP_PATTERNS = [
   /^#{1,6}\s*$/, // heading without content
@@ -93,6 +131,7 @@ interface Section {
   body: string;
   text: string;
   charStart: number; // position of the heading line (or 0 for pre-heading body)
+  charEnd: number;
 }
 
 export function splitBySections(content: string): Section[] {
@@ -116,6 +155,7 @@ export function splitBySections(content: string): Section[] {
         body,
         text,
         charStart: currentSectionStart,
+        charEnd: Math.min(pos, content.length),
       });
     }
     currentBody = [];
@@ -198,14 +238,9 @@ export function slidingWindow(
       end += cp > 0xffff ? 2 : 1;
     }
 
-    const chunk = text.slice(start, end).trim();
-    if (!shouldSkipChunk(chunk)) {
-      chunks.push({
-        text: chunk,
-        headingChain,
-        charStart: sectionOffset + start,
-        charEnd: sectionOffset + end,
-      });
+    const chunk = createSourceChunk(text, start, end, headingChain, sectionOffset);
+    if (!shouldSkipChunk(chunk.text)) {
+      chunks.push(chunk);
     }
     if (end >= text.length) break;
 
@@ -214,14 +249,22 @@ export function slidingWindow(
 
   return chunks.length > 0
     ? chunks
-    : [
-        {
-          text: text.trim(),
-          headingChain,
-          charStart: sectionOffset,
-          charEnd: sectionOffset + text.length,
-        },
-      ];
+    : [createSourceChunk(text, 0, text.length, headingChain, sectionOffset)];
+}
+
+/** Strip markdown syntax from a single line so it matches the textContent of a rendered DOM block. */
+function normalizeMatchLine(line: string): string {
+  const stripped = stripMarkdownImages(
+    stripHtmlTags(stripLeadingBlockquoteCallout(line)) // blockquote/callout markers and HTML tags
+      .replace(/\[\^[^\]]+\]/g, '') // footnote references ([^1])
+      .replace(/!\[\[[^\]]+\]\]/g, ''), // embed wikilinks ![[Note]] → strip entirely
+  );
+  return replaceMarkdownInlineLinks(replaceWikilinkLabels(stripped))
+    .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // bold / italic
+    .replace(/`([^`]+)`/g, '$1') // inline code
+    .replace(/^(?:[-*+]|\d+[.)]) \s*/m, '') // list markers
+    .replace(/^\[[xX ]\]\s*/m, '') // task checkboxes
+    .trim();
 }
 
 /**
@@ -249,27 +292,627 @@ export function buildMatchText(chunkText: string): string {
   // This skips e.g. callout type-only lines ("> [!quote]" strips to "").
   for (const line of [...bodyLines, fallback]) {
     if (!line.trim()) continue;
-    const result = line
-      .replace(/^(?:>\s*)+(?:\[![^\]]*\]\s*)?(?:>\s*)*/, '') // blockquote/callout markers (handles "> [!type] > ...")
-      .replace(/<[^>]+>/g, '') // HTML tags (<u>, <mark>, etc.)
-      .replace(/\[\^[^\]]+\]/g, '') // footnote references ([^1])
-      .replace(/!\[\[[^\]]+\]\]/g, '') // embed wikilinks ![[Note]] → strip entirely
-      .replace(/!\[.*?\]\(.*?\)/g, '') // images ![alt](url)
-      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, t: string, a: string) => a || t) // [[wikilinks]] → alias if present, else target
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [links](url) → text
-      .replace(/[*_]{1,2}([^*_]+)[*_]{1,2}/g, '$1') // bold / italic
-      .replace(/`([^`]+)`/g, '$1') // inline code
-      .replace(/^(?:[-*+]|\d+[.)]) \s*/m, '') // list markers
-      .replace(/^\[[xX ]\]\s*/m, '') // task checkboxes
-      .trim();
+    const result = normalizeMatchLine(line);
     if (result) return result.slice(0, 80);
   }
   return '';
 }
 
+/** Remove sentinel markers from a snippet returned by SQLite's snippet() function. */
+export function stripSnippetMarkers(text: string, markStart: string, markEnd: string): string {
+  return text.split(markStart).join('').split(markEnd).join('');
+}
+
+/**
+ * Build matchText from a BM25 snippet whose real FTS match is wrapped in sentinel
+ * markers (see searchBm25's snippet() call). A multi-line snippet window doesn't
+ * necessarily have the match on its first line, so — unlike buildMatchText, which
+ * assumes the chunk text itself starts at the relevant content — this picks the
+ * line that actually contains the marked match.
+ */
+export function buildMatchTextFromMarkedSnippet(
+  markedSnippet: string,
+  markStart: string,
+  markEnd: string,
+): string {
+  const markIndex = markedSnippet.indexOf(markStart);
+  if (markIndex === -1) {
+    return buildMatchText(stripSnippetMarkers(markedSnippet, markStart, markEnd));
+  }
+  const lineStart = markedSnippet.lastIndexOf('\n', markIndex) + 1;
+  const lineEndRaw = markedSnippet.indexOf('\n', markIndex);
+  const lineEnd = lineEndRaw === -1 ? markedSnippet.length : lineEndRaw;
+  const line = stripSnippetMarkers(markedSnippet.slice(lineStart, lineEnd), markStart, markEnd);
+  const result = normalizeMatchLine(line);
+  if (result) return result.slice(0, 80);
+  // Marked line stripped to nothing (e.g. a callout-type-only line) — fall back to
+  // the ordinary first-usable-line heuristic over the whole (unmarked) snippet.
+  return buildMatchText(stripSnippetMarkers(markedSnippet, markStart, markEnd));
+}
+
+function stripLeadingBlockquoteCallout(value: string): string {
+  let index = stripLeadingQuoteMarkers(value, 0);
+  if (value.startsWith('[!', index)) {
+    const calloutEnd = value.indexOf(']', index + 2);
+    if (calloutEnd !== -1) {
+      index = skipWhitespace(value, calloutEnd + 1);
+      index = stripLeadingQuoteMarkers(value, index);
+    }
+  }
+  return value.slice(index);
+}
+
+function stripLeadingQuoteMarkers(value: string, start: number): number {
+  let index = start;
+  while (value[index] === '>') {
+    index = skipWhitespace(value, index + 1);
+  }
+  return index;
+}
+
+function skipWhitespace(value: string, start: number): number {
+  let index = start;
+  while (index < value.length && isWhitespace(value[index]!)) index++;
+  return index;
+}
+
+function isWhitespace(char: string): boolean {
+  return char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '\f';
+}
+
+function isLowSurrogate(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+function trimSourceBounds(source: string, rawStart: number, rawEnd: number): [number, number] {
+  let start = Math.max(0, Math.min(rawStart, source.length));
+  let end = Math.max(start, Math.min(rawEnd, source.length));
+
+  while (start < end && isWhitespace(source[start]!)) start++;
+  while (end > start && isWhitespace(source[end - 1]!)) end--;
+
+  if (start > 0 && isLowSurrogate(source.charCodeAt(start))) start--;
+  if (end < source.length && isLowSurrogate(source.charCodeAt(end))) end++;
+
+  return [start, end];
+}
+
+function createSourceChunk(
+  source: string,
+  rawStart: number,
+  rawEnd: number,
+  headingChain: string[],
+  sourceOffset = 0,
+): Chunk {
+  const [start, end] = trimSourceBounds(source, rawStart, rawEnd);
+  return {
+    text: source.slice(start, end),
+    headingChain,
+    charStart: sourceOffset + start,
+    charEnd: sourceOffset + end,
+  };
+}
+
+function createExactSourceChunk(
+  source: string,
+  start: number,
+  end: number,
+  headingChain: string[],
+): Chunk {
+  return {
+    text: source.slice(start, end),
+    headingChain,
+    charStart: start,
+    charEnd: end,
+  };
+}
+
+function canSplitAt(source: string, position: number): boolean {
+  if (position <= 0 || position >= source.length) return false;
+  if (isLowSurrogate(source.charCodeAt(position))) return false;
+  return source[position - 1] !== '\r' || source[position] !== '\n';
+}
+
+function addBoundary(
+  source: string,
+  priorities: Map<number, number>,
+  position: number,
+  priority: number,
+): void {
+  if (!canSplitAt(source, position)) return;
+  priorities.set(position, Math.max(priorities.get(position) ?? 0, priority));
+}
+
+function collectLineBoundaries(source: string, priorities: Map<number, number>): void {
+  let lineStart = 0;
+  while (lineStart < source.length) {
+    const newline = source.indexOf('\n', lineStart);
+    const rawLineEnd = newline === -1 ? source.length : newline;
+    const lineEnd =
+      rawLineEnd > lineStart && source[rawLineEnd - 1] === '\r' ? rawLineEnd - 1 : rawLineEnd;
+    const line = source.slice(lineStart, lineEnd);
+
+    if (/^\s*\[[^\]\r\n]+\]:\s+/.test(line)) {
+      addBoundary(source, priorities, lineStart, BOUNDARY_PRIORITY.REFERENCE);
+    } else if (/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>|\|)/.test(line)) {
+      addBoundary(source, priorities, lineStart, BOUNDARY_PRIORITY.MARKDOWN_LINE);
+    }
+    addBoundary(source, priorities, lineEnd, BOUNDARY_PRIORITY.LINE_END);
+
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+}
+
+function collectStructuralBoundaries(source: string, priorities: Map<number, number>): void {
+  const blankLine = /\r?\n[ \t]*\r?\n/g;
+  for (const match of source.matchAll(blankLine)) {
+    addBoundary(source, priorities, match.index, BOUNDARY_PRIORITY.BLANK_LINE);
+  }
+
+  const sentenceEnd = /[.!?]["')\]]*(?=\s|$)/g;
+  for (const match of source.matchAll(sentenceEnd)) {
+    addBoundary(source, priorities, match.index + match[0].length, BOUNDARY_PRIORITY.SENTENCE);
+  }
+}
+
+function collectBoundaries(source: string): Boundary[] {
+  const priorities = new Map<number, number>();
+  let position = 0;
+  while (position < source.length) {
+    const codePoint = source.codePointAt(position)!;
+    position += codePoint > 0xffff ? 2 : 1;
+    addBoundary(source, priorities, position, BOUNDARY_PRIORITY.CODE_POINT);
+  }
+
+  for (let index = 0; index < source.length; index++) {
+    if (isWhitespace(source[index]!)) {
+      addBoundary(source, priorities, index, BOUNDARY_PRIORITY.WHITESPACE);
+    }
+  }
+  collectLineBoundaries(source, priorities);
+  collectStructuralBoundaries(source, priorities);
+
+  return [...priorities]
+    .map(([boundaryPosition, priority]) => ({ position: boundaryPosition, priority }))
+    .sort((left, right) => left.position - right.position);
+}
+
+export function createChunkBoundaryIndex(source: string): ChunkBoundaryIndex {
+  const index = { sourceLength: source.length } as ChunkBoundaryIndex;
+  boundaryIndexStates.set(index, {
+    source,
+    boundaries: collectBoundaries(source),
+    boundaryVisits: 0,
+  });
+  return index;
+}
+
+function getBoundaryIndexState(source: string, index: ChunkBoundaryIndex): ChunkBoundaryIndexState {
+  const state = boundaryIndexStates.get(index);
+  if (!state || state.source !== source) {
+    throw new Error('Chunk boundary index does not match source');
+  }
+  return state;
+}
+
+export function getChunkBoundaryIndexStats(index: ChunkBoundaryIndex): ChunkBoundaryIndexStats {
+  const state = boundaryIndexStates.get(index);
+  if (!state) throw new Error('Invalid chunk boundary index');
+  return {
+    collections: 1,
+    boundaryCount: state.boundaries.length,
+    boundaryVisits: state.boundaryVisits,
+  };
+}
+
+function lowerBoundaryIndex(boundaries: readonly Boundary[], position: number): number {
+  let low = 0;
+  let high = boundaries.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (boundaries[middle]!.position < position) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function alignExistingChunk(source: string, chunk: Chunk): { chunk: Chunk; aligned: boolean } {
+  if (
+    chunk.charStart >= 0 &&
+    chunk.charEnd >= chunk.charStart &&
+    chunk.charEnd <= source.length &&
+    source.slice(chunk.charStart, chunk.charEnd) === chunk.text
+  ) {
+    return { chunk, aligned: true };
+  }
+
+  const searchStart = Math.max(0, Math.min(chunk.charStart, source.length));
+  const locatedStart = source.indexOf(chunk.text, searchStart);
+  if (locatedStart === -1) return { chunk, aligned: false };
+  return {
+    chunk: {
+      ...chunk,
+      charStart: locatedStart,
+      charEnd: locatedStart + chunk.text.length,
+    },
+    aligned: true,
+  };
+}
+
+interface FittingBoundary {
+  position: number;
+  count: number;
+}
+
+const NON_MONOTONIC_FIT_LOOKAHEAD = 16;
+
+function findFittingBoundary(
+  source: string,
+  headingChain: string[],
+  limit: number,
+  countProjected: ProjectedTokenCounter,
+  boundaries: readonly Boundary[],
+  boundaryState: ChunkBoundaryIndexState,
+  start: number,
+  chunkEnd: number,
+): FittingBoundary | null {
+  const firstIndex = lowerBoundaryIndex(boundaries, start + 1);
+  const endIndex = lowerBoundaryIndex(boundaries, chunkEnd);
+  const internalCount = endIndex - firstIndex;
+  const candidateCount = internalCount + 1;
+  const lastOffset = candidateCount - 1;
+  const counts = new Map<number, number>();
+  const positionAt = (offset: number): number =>
+    offset < internalCount ? boundaries[firstIndex + offset]!.position : chunkEnd;
+  const countAt = (offset: number): number => {
+    const position = positionAt(offset);
+    const cached = counts.get(position);
+    if (cached !== undefined) return cached;
+    const candidate = createExactSourceChunk(source, start, position, headingChain);
+    const count = countProjected(candidate.text, headingChain);
+    boundaryState.boundaryVisits++;
+    counts.set(position, count);
+    return count;
+  };
+
+  let fittingOffset = countAt(0) <= limit ? 0 : -1;
+  if (fittingOffset === -1) {
+    const lookaheadEnd = Math.min(lastOffset, NON_MONOTONIC_FIT_LOOKAHEAD);
+    for (let offset = 1; offset <= lookaheadEnd; offset++) {
+      if (countAt(offset) <= limit) {
+        fittingOffset = offset;
+        break;
+      }
+    }
+    if (fittingOffset === -1) return null;
+  }
+
+  let firstOverOffset = -1;
+  let distance = 1;
+  while (fittingOffset < lastOffset) {
+    const probeOffset = Math.min(lastOffset, fittingOffset + distance);
+    if (countAt(probeOffset) > limit) {
+      firstOverOffset = probeOffset;
+      break;
+    }
+    fittingOffset = probeOffset;
+    if (fittingOffset === lastOffset) break;
+    distance *= 2;
+  }
+
+  if (firstOverOffset !== -1) {
+    let low = fittingOffset + 1;
+    let high = firstOverOffset - 1;
+    while (low <= high) {
+      const middle = low + Math.floor((high - low) / 2);
+      if (countAt(middle) <= limit) {
+        fittingOffset = middle;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+  }
+
+  const position = positionAt(fittingOffset);
+  return { position, count: countAt(fittingOffset) };
+}
+
+function choosePreferredBoundary(
+  source: string,
+  headingChain: string[],
+  limit: number,
+  countProjected: ProjectedTokenCounter,
+  boundaries: readonly Boundary[],
+  boundaryState: ChunkBoundaryIndexState,
+  start: number,
+  fitting: FittingBoundary,
+): FittingBoundary {
+  const preferredStart = Math.max(start + 1, start + Math.floor((fitting.position - start) * 0.8));
+  const firstIndex = lowerBoundaryIndex(boundaries, preferredStart);
+  const endIndex = lowerBoundaryIndex(boundaries, fitting.position + 1);
+  let preferred: Boundary | undefined;
+  for (let index = firstIndex; index < endIndex; index++) {
+    const boundary = boundaries[index]!;
+    if (
+      !preferred ||
+      boundary.priority > preferred.priority ||
+      (boundary.priority === preferred.priority && boundary.position > preferred.position)
+    ) {
+      preferred = boundary;
+    }
+  }
+  if (!preferred || preferred.position === fitting.position) return fitting;
+
+  const candidate = createExactSourceChunk(source, start, preferred.position, headingChain);
+  const count = countProjected(candidate.text, headingChain);
+  boundaryState.boundaryVisits++;
+  return count <= limit ? { position: preferred.position, count } : fitting;
+}
+
+function previousCodePointStart(source: string, position: number): number {
+  let previous = position - 1;
+  if (previous > 0 && isLowSurrogate(source.charCodeAt(previous))) previous--;
+  return previous;
+}
+
+function retreatByTokenBudget(source: string, start: number, end: number, budget: number): number {
+  if (budget <= 0) return end;
+  const minimumStart = start + (source.codePointAt(start)! > 0xffff ? 2 : 1);
+  let position = end;
+  let tokens = 0;
+  while (position > minimumStart) {
+    const previous = previousCodePointStart(source, position);
+    if (previous < minimumStart) break;
+    const nextTokens = tokens + charTokenWeight(source.codePointAt(previous)!);
+    if (Math.ceil(nextTokens) > budget) break;
+    tokens = nextTokens;
+    position = previous;
+  }
+  if (position > start && source[position - 1] === '\r' && source[position] === '\n') position++;
+  return position;
+}
+
+function refineAlignedChunk(
+  source: string,
+  chunk: Chunk,
+  limit: number,
+  countProjected: ProjectedTokenCounter,
+  overlap: number,
+  boundaries: readonly Boundary[],
+  boundaryState: ChunkBoundaryIndexState,
+): Chunk[] {
+  if (countProjected(chunk.text, chunk.headingChain) <= limit) return [chunk];
+
+  const refined: Chunk[] = [];
+  let start = chunk.charStart;
+  while (start < chunk.charEnd) {
+    const fitting = findFittingBoundary(
+      source,
+      chunk.headingChain,
+      limit,
+      countProjected,
+      boundaries,
+      boundaryState,
+      start,
+      chunk.charEnd,
+    );
+    if (!fitting) {
+      refined.push(createExactSourceChunk(source, start, chunk.charEnd, chunk.headingChain));
+      break;
+    }
+    const chosen =
+      fitting.position === chunk.charEnd
+        ? fitting
+        : choosePreferredBoundary(
+            source,
+            chunk.headingChain,
+            limit,
+            countProjected,
+            boundaries,
+            boundaryState,
+            start,
+            fitting,
+          );
+    const child = createExactSourceChunk(source, start, chosen.position, chunk.headingChain);
+    if (child.text.length > 0) refined.push(child);
+    if (chosen.position >= chunk.charEnd) break;
+
+    const effectiveOverlap = Math.min(
+      Math.max(0, Math.floor(overlap)),
+      Math.floor(estimateTokens(child.text) / 2),
+    );
+    const nextStart = retreatByTokenBudget(source, start, chosen.position, effectiveOverlap);
+    if (nextStart <= start) throw new Error('Chunk refinement failed to make progress');
+    start = nextStart;
+  }
+  return refined;
+}
+
+export function refineChunksToFit(
+  source: string,
+  chunks: readonly Chunk[],
+  limit: number,
+  countProjected: ProjectedTokenCounter,
+  overlap: number,
+  boundaryIndex: ChunkBoundaryIndex = createChunkBoundaryIndex(source),
+): Chunk[] {
+  const boundaryState = getBoundaryIndexState(source, boundaryIndex);
+  const boundaries = boundaryState.boundaries;
+  const refined: Chunk[] = [];
+  for (const inputChunk of chunks) {
+    const aligned = alignExistingChunk(source, inputChunk);
+    if (!aligned.aligned || aligned.chunk.text.length === 0) {
+      refined.push(aligned.chunk);
+      continue;
+    }
+    refined.push(
+      ...refineAlignedChunk(
+        source,
+        aligned.chunk,
+        limit,
+        countProjected,
+        overlap,
+        boundaries,
+        boundaryState,
+      ),
+    );
+  }
+  return refined;
+}
+
+function validRetrySplit(source: string, chunk: Chunk, position: number): [Chunk, Chunk] | null {
+  const left = createExactSourceChunk(source, chunk.charStart, position, chunk.headingChain);
+  const right = createExactSourceChunk(source, position, chunk.charEnd, chunk.headingChain);
+  if (left.text.length === 0 || right.text.length === 0) return null;
+  if (left.charEnd - left.charStart >= chunk.charEnd - chunk.charStart) return null;
+  if (right.charEnd - right.charStart >= chunk.charEnd - chunk.charStart) return null;
+  return [left, right];
+}
+
+export function splitChunkForRetry(
+  source: string,
+  inputChunk: Chunk,
+  boundaryIndex: ChunkBoundaryIndex = createChunkBoundaryIndex(source),
+): [Chunk, Chunk] | null {
+  const aligned = alignExistingChunk(source, inputChunk);
+  if (!aligned.aligned) return null;
+  const chunk = aligned.chunk;
+  const state = getBoundaryIndexState(source, boundaryIndex);
+  const boundaries = state.boundaries;
+  const firstIndex = lowerBoundaryIndex(boundaries, chunk.charStart + 1);
+  const endIndex = lowerBoundaryIndex(boundaries, chunk.charEnd);
+  if (firstIndex >= endIndex) return null;
+
+  const midpoint = chunk.charStart + (chunk.charEnd - chunk.charStart) / 2;
+  let natural: Boundary | undefined;
+  let fallback: Boundary | undefined;
+  for (let index = firstIndex; index < endIndex; index++) {
+    const candidate = boundaries[index]!;
+    state.boundaryVisits++;
+    const current = candidate.priority > BOUNDARY_PRIORITY.CODE_POINT ? natural : fallback;
+    if (
+      !current ||
+      Math.abs(candidate.position - midpoint) < Math.abs(current.position - midpoint) ||
+      (Math.abs(candidate.position - midpoint) === Math.abs(current.position - midpoint) &&
+        candidate.priority > current.priority)
+    ) {
+      if (candidate.priority > BOUNDARY_PRIORITY.CODE_POINT) natural = candidate;
+      else fallback = candidate;
+    }
+  }
+
+  const naturalSplit = natural ? validRetrySplit(source, chunk, natural.position) : null;
+  if (naturalSplit) return naturalSplit;
+  return fallback ? validRetrySplit(source, chunk, fallback.position) : null;
+}
+
+function stripHtmlTags(value: string): string {
+  let result = '';
+  let index = 0;
+  while (index < value.length) {
+    if (value[index] !== '<') {
+      result += value[index];
+      index++;
+      continue;
+    }
+    const end = value.indexOf('>', index + 1);
+    if (end === -1) {
+      result += value.slice(index);
+      break;
+    }
+    index = end + 1;
+  }
+  return result;
+}
+
+function stripMarkdownImages(value: string): string {
+  let result = '';
+  let index = 0;
+  while (index < value.length) {
+    if (!value.startsWith('![', index)) {
+      result += value[index];
+      index++;
+      continue;
+    }
+
+    const labelEnd = value.indexOf(']', index + 2);
+    if (labelEnd === -1 || value[labelEnd + 1] !== '(') {
+      result += value[index];
+      index++;
+      continue;
+    }
+    const destinationEnd = value.indexOf(')', labelEnd + 2);
+    if (destinationEnd === -1) {
+      result += value[index];
+      index++;
+      continue;
+    }
+    index = destinationEnd + 1;
+  }
+  return result;
+}
+
+function replaceWikilinkLabels(value: string): string {
+  let result = '';
+  let index = 0;
+  while (index < value.length) {
+    const start = value.indexOf('[[', index);
+    if (start === -1) {
+      result += value.slice(index);
+      break;
+    }
+
+    const end = value.indexOf(']]', start + 2);
+    if (end === -1) {
+      result += value.slice(index);
+      break;
+    }
+
+    result += value.slice(index, start);
+    const inner = value.slice(start + 2, end);
+    const aliasIndex = inner.indexOf('|');
+    result += aliasIndex === -1 ? inner : inner.slice(aliasIndex + 1);
+    index = end + 2;
+  }
+  return result;
+}
+
+function replaceMarkdownInlineLinks(value: string): string {
+  let result = '';
+  let index = 0;
+  while (index < value.length) {
+    const labelStart = value.indexOf('[', index);
+    if (labelStart === -1) {
+      result += value.slice(index);
+      break;
+    }
+
+    const labelEnd = value.indexOf(']', labelStart + 1);
+    if (labelEnd === -1 || value[labelEnd + 1] !== '(') {
+      result += value.slice(index, labelStart + 1);
+      index = labelStart + 1;
+      continue;
+    }
+
+    const destinationEnd = value.indexOf(')', labelEnd + 2);
+    if (destinationEnd === -1) {
+      result += value.slice(index, labelStart + 1);
+      index = labelStart + 1;
+      continue;
+    }
+
+    result += value.slice(index, labelStart);
+    result += value.slice(labelStart + 1, labelEnd);
+    index = destinationEnd + 1;
+  }
+  return result;
+}
+
 export function chunkNote(content: string, contextLength: number): Chunk[] {
   if (estimateTokens(content) <= contextLength) {
-    return [{ text: content.trim(), headingChain: [], charStart: 0, charEnd: content.length }];
+    return [createSourceChunk(content, 0, content.length, [])];
   }
 
   const sections = splitBySections(content);
@@ -281,17 +924,15 @@ export function chunkNote(content: string, contextLength: number): Chunk[] {
   const chunks: Chunk[] = [];
   for (const section of sections) {
     if (shouldSkipChunk(section.body)) continue;
-    if (estimateTokens(section.text) <= contextLength) {
-      chunks.push({
-        text: section.text,
-        headingChain: section.headingChain,
-        charStart: section.charStart,
-        charEnd: section.charStart + section.text.length,
-      });
+    const sectionSource = content.slice(section.charStart, section.charEnd);
+    if (estimateTokens(sectionSource) <= contextLength) {
+      chunks.push(
+        createSourceChunk(content, section.charStart, section.charEnd, section.headingChain),
+      );
     } else {
       chunks.push(
         ...slidingWindow(
-          section.text,
+          sectionSource,
           contextLength,
           config.chunkOverlap,
           section.headingChain,
@@ -301,7 +942,5 @@ export function chunkNote(content: string, contextLength: number): Chunk[] {
     }
   }
 
-  return chunks.length > 0
-    ? chunks
-    : [{ text: content.trim(), headingChain: [], charStart: 0, charEnd: content.length }];
+  return chunks.length > 0 ? chunks : [createSourceChunk(content, 0, content.length, [])];
 }

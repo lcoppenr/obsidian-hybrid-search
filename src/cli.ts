@@ -213,8 +213,7 @@ function discoverConfig(dbPathOpt?: string): void {
     const get = (key: string) =>
       (
         db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
-          | { value: string }
-          | undefined
+          { value: string } | undefined
       )?.value;
 
     const vaultPath = get('vault_path');
@@ -511,7 +510,10 @@ program
     (v: string, a: string[]) => [...a, v],
     [] as string[],
   )
-  .option('--limit <n>', 'Maximum results for search/filter modes; --related uses --depth')
+  .option(
+    '--limit <n>',
+    'Maximum results for search/filter modes; 0 means no limit; --related uses --depth',
+  )
   .option('--threshold <n>', 'Minimum score threshold 0..1 for search/path modes', '0')
   .option(
     '--tag <tag>',

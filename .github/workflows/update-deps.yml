@@ -9,15 +9,17 @@ jobs:
   update-deps:
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
       pull-requests: write
+      statuses: write
     env:
-      DEPENDENCY_UPDATE_TOKEN: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
+      HUSKY: '0'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -33,15 +35,6 @@ jobs:
         run: |
           git diff --quiet package.json package-lock.json || echo "changed=true" >> $GITHUB_OUTPUT
 
-      - name: Verify automation token is configured
-        if: steps.changes.outputs.changed == 'true'
-        run: |
-          if [ -z "$DEPENDENCY_UPDATE_TOKEN" ]; then
-            echo "Missing repository secret DEPENDENCY_UPDATE_TOKEN."
-            echo "Use a PAT or GitHub App token so the PR triggers pull_request workflows."
-            exit 1
-          fi
-
       - name: Bump patch version
         if: steps.changes.outputs.changed == 'true'
         id: bump
@@ -50,21 +43,31 @@ jobs:
           npm run sync-server-json
           echo "version=$(jq -r .version package.json)" >> $GITHUB_OUTPUT
 
+      - name: Format generated files
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run format
+
       - name: Build
         if: steps.changes.outputs.changed == 'true'
         run: npm run build
+
+      - name: Lint
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run lint
 
       - name: Unit tests
         if: steps.changes.outputs.changed == 'true'
         run: npm test
 
+      - name: Dead code
+        if: steps.changes.outputs.changed == 'true'
+        run: npm run knip
+
       - name: Create Pull Request
         if: steps.changes.outputs.changed == 'true'
         id: pr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
-          branch-token: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
           commit-message: 'chore: update dependencies'
           branch: chore/update-deps
           title: 'chore: weekly dependency update'
@@ -73,11 +76,223 @@ jobs:
 
             - `npm update --save` was run to update all dependencies within their semver ranges
             - Version bumped to `${{ steps.bump.outputs.version }}`
-            - Build and unit tests passed ✅
+            - Formatting, lint, build, unit tests, and knip passed ✅
           labels: dependencies
+
+      - name: Run CI for pull request branch
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "${{ steps.pr.outputs.pull-request-branch }}"
+
+      - name: Mark required CI status pending
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+        run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+            -f state=pending \
+            -f context=lint-and-test \
+            -f description="CI is running for dependency update" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+      - name: Wait for CI and publish required status
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BRANCH: ${{ steps.pr.outputs.pull-request-branch }}
+          PR_HEAD_SHA: ${{ steps.pr.outputs.pull-request-head-sha }}
+        run: |
+          publish_status() {
+            local state="$1"
+            local description="$2"
+            local target_url="$3"
+
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/statuses/${PR_HEAD_SHA}" \
+              -f state="$state" \
+              -f context=lint-and-test \
+              -f description="$description" \
+              -f target_url="$target_url"
+          }
+
+          for i in $(seq 1 90); do
+            run_json="$(gh run list \
+              --workflow CI \
+              --branch "$PR_BRANCH" \
+              --commit "$PR_HEAD_SHA" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId,status,conclusion,url)"
+
+            run_count="$(jq 'length' <<<"$run_json")"
+            if [ "$run_count" -eq 0 ]; then
+              echo "No dispatched CI run registered yet for $PR_BRANCH at $PR_HEAD_SHA. Waiting..."
+              sleep 20
+              continue
+            fi
+
+            status="$(jq -r '.[0].status' <<<"$run_json")"
+            conclusion="$(jq -r '.[0].conclusion' <<<"$run_json")"
+            url="$(jq -r '.[0].url' <<<"$run_json")"
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI passed for $PR_BRANCH at $PR_HEAD_SHA: $url"
+                publish_status success "CI passed for dependency update" "$url"
+                exit 0
+              fi
+              echo "CI failed for $PR_BRANCH at $PR_HEAD_SHA."
+              echo "Conclusion: $conclusion"
+              echo "Run: $url"
+              publish_status failure "CI failed for dependency update" "$url"
+              exit 1
+            fi
+
+            echo "CI is $status for $PR_BRANCH at $PR_HEAD_SHA ($url). Waiting..."
+            sleep 20
+          done
+
+          echo "Timed out waiting for CI on $PR_BRANCH at $PR_HEAD_SHA."
+          publish_status failure "Timed out waiting for dependency CI" \
+            "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          exit 1
 
       - name: Enable auto-merge
         if: steps.pr.outputs.pull-request-number
         run: gh pr merge --auto --squash --delete-branch ${{ steps.pr.outputs.pull-request-number }}
         env:
-          GH_TOKEN: ${{ env.DEPENDENCY_UPDATE_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Wait for pull request merge
+        if: steps.pr.outputs.pull-request-number
+        id: merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+        run: |
+          for i in $(seq 1 90); do
+            pr_json="$(gh pr view "$PR_NUMBER" --json state,mergedAt,mergeCommit,url)"
+            state="$(jq -r '.state' <<<"$pr_json")"
+            merged_at="$(jq -r '.mergedAt // empty' <<<"$pr_json")"
+            merge_commit="$(jq -r '.mergeCommit.oid // empty' <<<"$pr_json")"
+            url="$(jq -r '.url' <<<"$pr_json")"
+
+            if [ "$state" = "MERGED" ] && [ -n "$merged_at" ] && [ -n "$merge_commit" ]; then
+              echo "Pull request #$PR_NUMBER merged at $merged_at: $url"
+              echo "commit=$merge_commit" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            if [ "$state" = "CLOSED" ]; then
+              echo "Pull request #$PR_NUMBER closed without a merge: $url"
+              exit 1
+            fi
+
+            echo "Pull request #$PR_NUMBER is $state. Waiting for auto-merge..."
+            sleep 20
+          done
+
+          echo "Timed out waiting for pull request #$PR_NUMBER to merge."
+          exit 1
+
+      - name: Run CI for merged master commit
+        if: steps.merge.outputs.commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref master
+
+      - name: Wait for CI to pass on merged master commit
+        if: steps.merge.outputs.commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_COMMIT: ${{ steps.merge.outputs.commit }}
+        run: |
+          for i in $(seq 1 90); do
+            run_json="$(gh run list \
+              --workflow CI \
+              --branch master \
+              --commit "$MERGE_COMMIT" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId,status,conclusion,url)"
+
+            run_count="$(jq 'length' <<<"$run_json")"
+            if [ "$run_count" -eq 0 ]; then
+              echo "No dispatched CI run registered yet for master at $MERGE_COMMIT. Waiting..."
+              sleep 20
+              continue
+            fi
+
+            status="$(jq -r '.[0].status' <<<"$run_json")"
+            conclusion="$(jq -r '.[0].conclusion' <<<"$run_json")"
+            url="$(jq -r '.[0].url' <<<"$run_json")"
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI passed for merged master commit $MERGE_COMMIT: $url"
+                exit 0
+              fi
+              echo "CI failed for merged master commit $MERGE_COMMIT."
+              echo "Conclusion: $conclusion"
+              echo "Run: $url"
+              exit 1
+            fi
+
+            echo "CI is $status for merged master commit $MERGE_COMMIT ($url). Waiting..."
+            sleep 20
+          done
+
+          echo "Timed out waiting for CI on merged master commit $MERGE_COMMIT."
+          exit 1
+
+      - name: Run auto-tag for dependency update merge
+        if: steps.merge.outputs.commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_COMMIT: ${{ steps.merge.outputs.commit }}
+        run: gh workflow run auto-tag.yml --ref master -f commit="$MERGE_COMMIT"
+
+      - name: Wait for auto-tag to pass
+        if: steps.merge.outputs.commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGE_COMMIT: ${{ steps.merge.outputs.commit }}
+        run: |
+          for i in $(seq 1 60); do
+            run_json="$(gh run list \
+              --workflow "Auto-tag after dependency update merge" \
+              --branch master \
+              --commit "$MERGE_COMMIT" \
+              --event workflow_dispatch \
+              --limit 1 \
+              --json databaseId,status,conclusion,url)"
+
+            run_count="$(jq 'length' <<<"$run_json")"
+            if [ "$run_count" -eq 0 ]; then
+              echo "No auto-tag run registered yet for $MERGE_COMMIT. Waiting..."
+              sleep 20
+              continue
+            fi
+
+            status="$(jq -r '.[0].status' <<<"$run_json")"
+            conclusion="$(jq -r '.[0].conclusion' <<<"$run_json")"
+            url="$(jq -r '.[0].url' <<<"$run_json")"
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "Auto-tag passed for $MERGE_COMMIT: $url"
+                exit 0
+              fi
+              echo "Auto-tag failed for $MERGE_COMMIT."
+              echo "Conclusion: $conclusion"
+              echo "Run: $url"
+              exit 1
+            fi
+
+            echo "Auto-tag is $status for $MERGE_COMMIT ($url). Waiting..."
+            sleep 20
+          done
+
+          echo "Timed out waiting for auto-tag on $MERGE_COMMIT."
+          exit 1

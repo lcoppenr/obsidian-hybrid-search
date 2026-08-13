@@ -80,12 +80,26 @@ export const EmbeddingApiResponseSchema = z.union([
     .object({
       error: z
         .object({
+          code: z.union([z.string(), z.number()]).optional(),
           message: z.string().optional(),
+          type: z.string().optional(),
+          metadata: z
+            .object({
+              error_type: z.string().optional(),
+            })
+            .passthrough()
+            .optional(),
         })
         .passthrough(),
     })
     .strict(),
 ]);
+
+export const OllamaEmbeddingResponseSchema = z
+  .object({
+    embeddings: z.array(z.array(FiniteNumberSchema)),
+  })
+  .passthrough();
 
 export type SearchOptionsBoundary = z.infer<typeof SearchOptionsBoundarySchema>;
 export type SearchToolArguments = z.infer<typeof SearchToolArgumentsSchema>;

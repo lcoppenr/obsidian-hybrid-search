@@ -3,6 +3,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeEach, describe, it, vi } from 'vitest';
+import { embedChunksWithRecovery } from '../src/chunk-embedding.js';
+import { createChunkBoundaryIndex, estimateTokens, type Chunk } from '../src/chunker.js';
+import * as tokenCounter from '../src/token-counter.js';
+
+const huggingFaceMocks = vi.hoisted(() => ({ pipeline: vi.fn() }));
+vi.mock('@huggingface/transformers', () => ({
+  env: {},
+  pipeline: huggingFaceMocks.pipeline,
+}));
 
 const vaultDir = mkdtempSync(path.join(tmpdir(), 'ohs-embedder-test-'));
 process.env.OBSIDIAN_VAULT_PATH = vaultDir;
@@ -20,7 +29,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const { embed, LOCAL_MODEL, clearOllamaSemaphore } = await import('../src/embedder.js');
+const {
+  embed,
+  embedDetailed,
+  LOCAL_MODEL,
+  clearOllamaSemaphore,
+  getDocumentTokenPolicy,
+  prepareEmbeddingInput,
+} = await import('../src/embedder.js');
 
 describe('LOCAL_MODEL constant', () => {
   it('is Xenova/multilingual-e5-small', () => {
@@ -82,34 +98,329 @@ describe('E5-style prefix for BGE / E5 models via API', () => {
     delete process.env.OPENAI_EMBEDDING_MODEL;
   });
 
-  it('does NOT add prefix for BGE model document embedding', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'bge-m3';
-    await embed(['hello world'], 'document');
-    assert.equal((capturedBody as { input: string[] }).input[0], 'hello world');
+  const prefixCases: {
+    name: string;
+    model: string;
+    type: 'document' | 'query';
+    input: string;
+    expected: string;
+  }[] = [
+    {
+      name: 'does NOT add prefix for BGE model document embedding',
+      model: 'bge-m3',
+      type: 'document',
+      input: 'hello world',
+      expected: 'hello world',
+    },
+    {
+      name: 'does NOT add prefix for BGE model query embedding',
+      model: 'baai/bge-m3',
+      type: 'query',
+      input: 'backlinks',
+      expected: 'backlinks',
+    },
+    {
+      name: 'adds "passage: " prefix for E5 model',
+      model: 'intfloat/multilingual-e5-large',
+      type: 'document',
+      input: 'hello',
+      expected: 'passage: hello',
+    },
+    {
+      name: 'does NOT add prefix for OpenAI model',
+      model: 'text-embedding-3-small',
+      type: 'document',
+      input: 'hello world',
+      expected: 'hello world',
+    },
+    {
+      name: 'does NOT add prefix for Voyage model',
+      model: 'voyage-4',
+      type: 'query',
+      input: 'hello world',
+      expected: 'hello world',
+    },
+  ];
+
+  it.each(prefixCases)('$name', async ({ model, type, input, expected }) => {
+    process.env.OPENAI_EMBEDDING_MODEL = model;
+    await embed([input], type);
+    assert.equal((capturedBody as { input: string[] }).input[0], expected);
+  });
+});
+
+describe('local document token policy', () => {
+  afterEach(() => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.OPENAI_BASE_URL = 'https://api.test/v1';
+    delete process.env.LOCAL_EMBEDDING_MODEL;
+    huggingFaceMocks.pipeline.mockReset();
+    clearOllamaSemaphore();
   });
 
-  it('does NOT add prefix for BGE model query embedding', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'baai/bge-m3';
-    await embed(['backlinks'], 'query');
-    assert.equal((capturedBody as { input: string[] }).input[0], 'backlinks');
+  it('uses the prepared-input estimator without initializing the pipeline', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    process.env.LOCAL_EMBEDDING_MODEL = 'Xenova/multilingual-e5-small';
+    clearOllamaSemaphore();
+    const policy = await getDocumentTokenPolicy();
+
+    assert.equal(prepareEmbeddingInput('hello', 'document'), 'passage: hello');
+    assert.equal(policy.count('hello'), estimateTokens('passage: hello'));
+    assert.equal(huggingFaceMocks.pipeline.mock.calls.length, 0);
   });
 
-  it('adds "passage: " prefix for E5 model', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'intfloat/multilingual-e5-large';
-    await embed(['hello'], 'document');
-    assert.equal((capturedBody as { input: string[] }).input[0], 'passage: hello');
+  it('does not initialize the pipeline to discover an unknown local model context', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    process.env.LOCAL_EMBEDDING_MODEL = 'custom/local-e5-model';
+    clearOllamaSemaphore();
+
+    const policy = await getDocumentTokenPolicy();
+
+    assert.ok(policy.limit > 0);
+    assert.equal(policy.count('hello'), estimateTokens('passage: hello'));
+    assert.equal(huggingFaceMocks.pipeline.mock.calls.length, 0);
   });
 
-  it('does NOT add prefix for OpenAI model', async () => {
+  it('uses loaded pipeline context metadata to prevent unknown-model truncation', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    process.env.LOCAL_EMBEDDING_MODEL = 'custom/local-e5-model';
+    clearOllamaSemaphore();
+    const policy = await getDocumentTokenPolicy();
+    assert.equal(policy.limit, 506, 'shaping uses the configured fallback without model loading');
+    const encode = vi.fn((text: string) =>
+      new Array<number>(text.includes('oversized') ? 253 : 252).fill(1),
+    );
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      { tokenizer: { encode, model_max_length: 256 } },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const outcomes = await embedDetailed(['fits', 'oversized'], 'document');
+
+    assert.equal(outcomes[0]?.ok, true);
+    assert.deepEqual(outcomes[1], {
+      ok: false,
+      kind: 'input_too_long',
+      message: 'Local embedding input exceeds the 252 token limit (253 tokens)',
+    });
+    assert.equal(pipeline.mock.calls.length, 1);
+    assert.equal(pipeline.mock.calls[0]?.[0], 'passage: fits');
+  });
+
+  it('uses the smaller sane limit when unknown-model tokenizer and model metadata conflict', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    process.env.LOCAL_EMBEDDING_MODEL = 'custom/local-e5-model';
+    clearOllamaSemaphore();
+    const encode = vi.fn(() => new Array<number>(253).fill(1));
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      {
+        tokenizer: { encode, model_max_length: 8192 },
+        model: { config: { max_position_embeddings: 256 } },
+      },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const [outcome] = await embedDetailed(['oversized'], 'document');
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      kind: 'input_too_long',
+      message: 'Local embedding input exceeds the 252 token limit (253 tokens)',
+    });
+    assert.equal(pipeline.mock.calls.length, 0);
+  });
+
+  it('initializes one pipeline for concurrent detailed embedding calls', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    clearOllamaSemaphore();
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      { tokenizer: { encode: vi.fn(() => [101, 11, 102]) } },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const [first, second] = await Promise.all([
+      embedDetailed(['first'], 'document'),
+      embedDetailed(['second'], 'document'),
+    ]);
+
+    assert.equal(huggingFaceMocks.pipeline.mock.calls.length, 1);
+    assert.equal(first[0]?.ok, true);
+    assert.equal(second[0]?.ok, true);
+  });
+
+  it('exact-counts each prepared leaf once and infers only fitting leaves', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    clearOllamaSemaphore();
+    const encode = vi.fn((text: string, options: { add_special_tokens: boolean }) => {
+      assert.deepEqual(options, { add_special_tokens: true });
+      return text.includes('oversized')
+        ? new Array<number>(507).fill(1)
+        : new Array<number>(506).fill(1);
+    });
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      { tokenizer: { encode } },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const outcomes = await embedDetailed(['fits', 'oversized'], 'document');
+
+    assert.deepEqual(
+      encode.mock.calls.map(([text]) => text),
+      ['passage: fits', 'passage: oversized'],
+    );
+    assert.equal(outcomes[0]?.ok, true);
+    assert.deepEqual(outcomes[1], {
+      ok: false,
+      kind: 'input_too_long',
+      message: 'Local embedding input exceeds the 506 token limit (507 tokens)',
+    });
+    assert.equal(pipeline.mock.calls.length, 1);
+    assert.equal(pipeline.mock.calls[0]?.[0], 'passage: fits');
+  });
+
+  it('returns invalid_response without inference when the local tokenizer throws', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    clearOllamaSemaphore();
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      {
+        tokenizer: {
+          encode: vi.fn(() => {
+            throw new Error('tokenizer failed');
+          }),
+        },
+      },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const [outcome] = await embedDetailed(['small fallback input'], 'document');
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      kind: 'invalid_response',
+      message: 'Local tokenizer failed to count prepared input',
+    });
+    assert.equal(pipeline.mock.calls.length, 0);
+  });
+
+  it('does not add tokenizer validation latency to local query embedding', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    clearOllamaSemaphore();
+    const encode = vi.fn(() => new Array<number>(507).fill(1));
+    const pipeline = Object.assign(
+      vi.fn().mockResolvedValue({ data: new Float32Array([0.1, 0.2]) }),
+      { tokenizer: { encode } },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+
+    const [outcome] = await embedDetailed(['search query'], 'query');
+
+    assert.equal(outcome?.ok, true);
+    assert.equal(encode.mock.calls.length, 0);
+    assert.equal(pipeline.mock.calls[0]?.[0], 'query: search query');
+  });
+
+  it('counts recovery tree leaves once and infers only accepted children', async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_BASE_URL;
+    clearOllamaSemaphore();
+    const inferred: string[] = [];
+    const encode = vi.fn((prepared: string) => {
+      const body = prepared.replace(/^passage: /, '');
+      return new Array<number>(body.length > 2 ? 507 : 506).fill(1);
+    });
+    const pipeline = Object.assign(
+      vi.fn(async (prepared: string) => {
+        inferred.push(prepared);
+        return { data: new Float32Array([0.1, 0.2]) };
+      }),
+      { tokenizer: { encode } },
+    );
+    huggingFaceMocks.pipeline.mockResolvedValue(pipeline);
+    const source = 'abcdefgh';
+    const parent: Chunk = {
+      text: source,
+      headingChain: [],
+      charStart: 0,
+      charEnd: source.length,
+    };
+
+    const result = await embedChunksWithRecovery({
+      source,
+      chunks: [parent],
+      boundaryIndex: createChunkBoundaryIndex(source),
+      project: (body) => body,
+      embed: (texts) => embedDetailed(texts, 'document'),
+    });
+
+    assert.deepEqual(
+      result.map(({ chunk }) => chunk.text),
+      ['ab', 'cd', 'ef', 'gh'],
+    );
+    assert.equal(encode.mock.calls.length, 7, 'one exact count per attempted recovery-tree leaf');
+    assert.deepEqual(inferred, ['passage: ab', 'passage: cd', 'passage: ef', 'passage: gh']);
+  });
+});
+
+describe('Ollama document token policy', () => {
+  afterEach(() => {
+    process.env.OPENAI_BASE_URL = 'https://api.test/v1';
+    delete process.env.OPENAI_EMBEDDING_MODEL;
+    clearOllamaSemaphore();
+    vi.restoreAllMocks();
+  });
+
+  it('uses the estimator without exact-counter construction for an OpenAI-named model', async () => {
+    process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
     process.env.OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
-    await embed(['hello world'], 'document');
-    assert.equal((capturedBody as { input: string[] }).input[0], 'hello world');
+    clearOllamaSemaphore();
+    const exactCounterSpy = vi.spyOn(tokenCounter, 'createOpenAiTokenCounter');
+    const text = '<https://example.com/?next=' + '%2Fprivate%2Fpath%3Fa%3D1'.repeat(40) + '>';
+
+    const policy = await getDocumentTokenPolicy();
+
+    assert.equal(policy.count(text), estimateTokens(text));
+    assert.equal(exactCounterSpy.mock.calls.length, 0);
+  });
+});
+
+describe('OpenAI document token policy fallback', () => {
+  afterEach(() => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    process.env.OPENAI_BASE_URL = 'https://api.test/v1';
+    delete process.env.OPENAI_EMBEDDING_MODEL;
+    clearOllamaSemaphore();
+    vi.restoreAllMocks();
   });
 
-  it('does NOT add prefix for Voyage model', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'voyage-4';
-    await embed(['hello world'], 'query');
-    assert.equal((capturedBody as { input: string[] }).input[0], 'hello world');
+  it('uses the estimator when exact tokenizer initialization fails and retries later', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+    clearOllamaSemaphore();
+    const exactCount = vi.fn(() => 7);
+    const exactCounterSpy = vi
+      .spyOn(tokenCounter, 'createOpenAiTokenCounter')
+      .mockRejectedValueOnce(new Error('corrupt cl100k ranks'))
+      .mockResolvedValueOnce({ exact: true, count: exactCount });
+    const text = 'counting continues after tokenizer initialization failure';
+
+    const fallbackPolicy = await getDocumentTokenPolicy();
+    const exactPolicy = await getDocumentTokenPolicy();
+
+    assert.equal(fallbackPolicy.count(text), estimateTokens(text));
+    assert.equal(exactPolicy.count(text), 7);
+    assert.equal(exactCounterSpy.mock.calls.length, 2);
   });
 });
 
@@ -183,11 +494,10 @@ describe('embed() — retryable failure (429)', () => {
   });
 });
 
-describe('embed() — batch failure falls back to per-item retry', () => {
+describe('embed() — batch retry behavior', () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it('retries each text individually when batch of 2 fails', async () => {
-    const fakeEmbedding = new Array(384).fill(0.1);
+  it('retries a transient batch twice without per-item fanout', async () => {
     const batchSizes: number[] = [];
 
     vi.stubGlobal(
@@ -195,23 +505,18 @@ describe('embed() — batch failure falls back to per-item retry', () => {
       vi.fn().mockImplementation((_url: string, opts: { body: string }) => {
         const body = JSON.parse(opts.body) as { input: string[] };
         batchSizes.push(body.input.length);
-        if (body.input.length > 1) {
-          return { ok: false, status: 500, text: () => 'server error' };
-        }
-        return {
-          ok: true,
-          status: 200,
-          json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
-        };
+        return { ok: false, status: 500, text: () => 'server error' };
       }),
     );
 
-    const result = await embed(['first text', 'second text'], 'document');
-    assert.equal(result.length, 2);
-    assert.ok(result[0] instanceof Float32Array);
-    assert.ok(result[1] instanceof Float32Array);
-    // First call is batch of 2, then two individual calls
-    assert.deepEqual(batchSizes, [2, 1, 1]);
+    vi.useFakeTimers();
+    const embedPromise = embed(['first text', 'second text'], 'document');
+    await vi.runAllTimersAsync();
+    const result = await embedPromise;
+    vi.useRealTimers();
+
+    assert.deepEqual(result, [null, null]);
+    assert.deepEqual(batchSizes, [2, 2, 2]);
   });
 });
 
@@ -243,7 +548,7 @@ describe('embed() — Ollama semaphore serializes concurrent calls', () => {
             resolve({
               ok: true,
               status: 200,
-              json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+              json: () => ({ embeddings: [fakeEmbedding] }),
             });
           }, 50);
         });
@@ -274,7 +579,7 @@ describe('embed() — Ollama semaphore serializes concurrent calls', () => {
             resolve({
               ok: true,
               status: 200,
-              json: () => ({ data: [{ embedding: fakeEmbedding, index: 0 }] }),
+              json: () => ({ embeddings: [fakeEmbedding] }),
             });
           }, 50);
         });

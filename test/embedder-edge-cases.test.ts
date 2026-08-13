@@ -22,7 +22,8 @@ afterEach(() => {
   delete process.env.OPENAI_EMBEDDING_MODEL;
 });
 
-const { embed, clearOllamaSemaphore } = await import('../src/embedder.js');
+const { embed, embedDetailed, getContextLength, clearOllamaSemaphore } =
+  await import('../src/embedder.js');
 
 function mockFetchOk(embeddings: number[][], status = 200): void {
   vi.stubGlobal(
@@ -49,6 +50,391 @@ function mockFetchError(status: number, body: string): void {
     }),
   );
 }
+
+function providerErrorResponse(
+  status: number,
+  error: {
+    code?: string | number;
+    type?: string;
+    message?: string;
+    metadata?: { error_type?: string };
+  },
+): { ok: boolean; status: number; text: () => Promise<string>; json: () => unknown } {
+  const body = { error };
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    text: () => Promise.resolve(JSON.stringify(body)),
+    json: () => body,
+  };
+}
+
+describe('embedDetailed() — structured provider outcomes', () => {
+  const fakeEmb = Array.from({ length: 384 }, () => 0.1);
+
+  it('classifies OpenRouter HTTP 200 context metadata without transient sleeps', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      providerErrorResponse(200, {
+        code: 400,
+        message: "HTTP 400: Invalid 'input[0]': maximum input length is 8192 tokens.",
+        metadata: { error_type: 'context_length_exceeded' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+
+    const [outcome] = await embedDetailed(['oversized'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'input_too_long');
+    assert.equal(outcome.status, 200);
+    assert.equal(outcome.providerCode, 400);
+    assert.match(outcome.message, /maximum input length/i);
+    assert.equal(fetchMock.mock.calls.length, 1);
+    assert.equal(timeoutSpy.mock.calls.length, 0);
+  });
+
+  it('classifies a generic structured HTTP 400 as permanent', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      providerErrorResponse(400, {
+        code: 'invalid_request_error',
+        type: 'invalid_request_error',
+        message: 'Invalid dimensions parameter',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [outcome] = await embedDetailed(['text'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'permanent');
+    assert.equal(outcome.status, 400);
+    assert.equal(outcome.providerCode, 'invalid_request_error');
+    assert.equal(fetchMock.mock.calls.length, 1);
+  });
+
+  it('keeps a generic max_tokens rejection permanent', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      providerErrorResponse(400, {
+        code: 'max_tokens',
+        type: 'invalid_request_error',
+        message: 'The max_tokens parameter is not supported for this input',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [outcome] = await embedDetailed(['text'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'permanent');
+    assert.equal(outcome.providerCode, 'max_tokens');
+    assert.equal(fetchMock.mock.calls.length, 1);
+  });
+
+  it('keeps a numeric max_tokens parameter bound permanent when input is only trailing context', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      providerErrorResponse(400, {
+        code: 'max_tokens',
+        type: 'invalid_request_error',
+        message: 'The max_tokens parameter must be less than 512 tokens for this input',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [outcome] = await embedDetailed(['text'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'permanent');
+    assert.equal(outcome.providerCode, 'max_tokens');
+    assert.equal(fetchMock.mock.calls.length, 1);
+  });
+
+  for (const message of [
+    'Invalid max_tokens: token budget is 512',
+    'input configuration: max_tokens must be less than 512 tokens',
+    'The input parameter controls a response capped at 512 tokens',
+    'The input token count parameter controls a response limit of 512 tokens',
+    'The prompt token length setting limits output to 512 tokens',
+    'input token count is 100; the response limit is 512 tokens, but max_tokens is invalid',
+    'prompt token length: 100. Output has a maximum of 512 tokens.',
+  ]) {
+    it(`keeps a structured max_tokens parameter error permanent: ${message}`, async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        providerErrorResponse(400, {
+          code: 'max_tokens',
+          type: 'invalid_request_error',
+          message,
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const [outcome] = await embedDetailed(['text'], 'document');
+
+      assert.ok(outcome && !outcome.ok);
+      assert.equal(outcome.kind, 'permanent');
+      assert.equal(outcome.providerCode, 'max_tokens');
+      assert.equal(fetchMock.mock.calls.length, 1);
+    });
+  }
+
+  it('accepts a structured max_tokens code when input owns the numeric token count', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      providerErrorResponse(400, {
+        code: 'max_tokens',
+        message: 'input has 9000 tokens; limit is 8192',
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [outcome] = await embedDetailed(['oversized'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'input_too_long');
+    assert.equal(fetchMock.mock.calls.length, 1);
+  });
+
+  for (const message of [
+    'input token count is 9000; limit is 8192',
+    'prompt token count of 9000 exceeds the 8192 limit',
+    'token length of the input is 9000; maximum is 8192',
+  ]) {
+    it(`accepts structured max_tokens when an input token metric owns the bound: ${message}`, async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        providerErrorResponse(400, {
+          code: 'max_tokens',
+          type: 'invalid_request_error',
+          message,
+        }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      const [outcome] = await embedDetailed(['oversized'], 'document');
+
+      assert.ok(outcome && !outcome.ok);
+      assert.equal(outcome.kind, 'input_too_long');
+      assert.equal(outcome.providerCode, 'max_tokens');
+      assert.equal(fetchMock.mock.calls.length, 1);
+    });
+  }
+
+  for (const message of [
+    'input has 9000 tokens; limit is 8192',
+    'input must have less than 512 tokens',
+  ]) {
+    it(`classifies a numeric input token bound as too long: ${message}`, async () => {
+      const fetchMock = vi.fn().mockResolvedValue(providerErrorResponse(400, { message }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const [outcome] = await embedDetailed(['oversized'], 'document');
+
+      assert.ok(outcome && !outcome.ok);
+      assert.equal(outcome.kind, 'input_too_long');
+      assert.equal(fetchMock.mock.calls.length, 1);
+    });
+  }
+
+  for (const scenario of [
+    { name: 'network error', response: new Error('socket closed') },
+    { name: 'HTTP 429', response: providerErrorResponse(429, { message: 'rate limited' }) },
+    { name: 'HTTP 502', response: providerErrorResponse(502, { message: 'bad gateway' }) },
+  ]) {
+    it(`retries a failed batch exactly twice without per-item fanout for ${scenario.name}`, async () => {
+      const fetchMock =
+        scenario.response instanceof Error
+          ? vi.fn().mockRejectedValue(scenario.response)
+          : vi.fn().mockResolvedValue(scenario.response);
+      vi.stubGlobal('fetch', fetchMock);
+      vi.useFakeTimers();
+
+      const outcomePromise = embedDetailed(['first', 'second'], 'document');
+      await vi.runAllTimersAsync();
+      const outcomes = await outcomePromise;
+
+      assert.equal(fetchMock.mock.calls.length, 3);
+      for (const [, init] of fetchMock.mock.calls) {
+        const body = JSON.parse((init as { body: string }).body) as { input: string[] };
+        assert.equal(body.input.length, 2);
+      }
+      assert.equal(outcomes.length, 2);
+      assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'transient'));
+    });
+  }
+
+  it('localizes an unidentified batch context error with singleton requests', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, init: { body: string }) => {
+      const { input } = JSON.parse(init.body) as { input: string[] };
+      if (input.length > 1 || input[0] === 'oversized') {
+        return Promise.resolve(
+          providerErrorResponse(400, {
+            message: 'maximum input length exceeded for this embedding model',
+          }),
+        );
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => ({ data: [{ embedding: fakeEmb, index: 0 }] }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcomes = await embedDetailed(['fits', 'oversized'], 'document');
+
+    assert.equal(fetchMock.mock.calls.length, 3);
+    assert.ok(outcomes[0]?.ok);
+    assert.ok(outcomes[0].embedding instanceof Float32Array);
+    assert.ok(outcomes[1] && !outcomes[1].ok);
+    assert.equal(outcomes[1].kind, 'input_too_long');
+    assert.deepEqual(
+      fetchMock.mock.calls.map(([, init]) => {
+        const body = JSON.parse((init as { body: string }).body) as { input: string[] };
+        return body.input.length;
+      }),
+      [2, 1, 1],
+    );
+  });
+
+  it('uses an HTTP 200 numeric provider code for bounded transient retries', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(providerErrorResponse(200, { code: 429, message: 'rate limited' }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['first', 'second'], 'document');
+    await vi.runAllTimersAsync();
+    const outcomes = await outcomePromise;
+
+    assert.equal(fetchMock.mock.calls.length, 3);
+    assert.ok(
+      outcomes.every(
+        (outcome) =>
+          !outcome.ok &&
+          outcome.kind === 'transient' &&
+          outcome.status === 200 &&
+          outcome.providerCode === 429,
+      ),
+    );
+  });
+
+  it('retries a generic HTTP 520 exactly twice without singleton fanout', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(providerErrorResponse(520, { message: 'provider unavailable' }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['first', 'second'], 'document');
+    await vi.runAllTimersAsync();
+    const outcomes = await outcomePromise;
+
+    assert.equal(fetchMock.mock.calls.length, 3);
+    assert.ok(
+      outcomes.every(
+        (outcome) => !outcome.ok && outcome.kind === 'transient' && outcome.status === 520,
+      ),
+    );
+    for (const [, init] of fetchMock.mock.calls) {
+      const body = JSON.parse((init as { body: string }).body) as { input: string[] };
+      assert.equal(body.input.length, 2);
+    }
+  });
+
+  it('retries HTTP 408 exactly twice without singleton fanout', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(providerErrorResponse(408, { message: 'request timeout' }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['first', 'second'], 'document');
+    await vi.runAllTimersAsync();
+    const outcomes = await outcomePromise;
+
+    assert.equal(fetchMock.mock.calls.length, 3);
+    assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'transient'));
+    for (const [, init] of fetchMock.mock.calls) {
+      const body = JSON.parse((init as { body: string }).body) as { input: string[] };
+      assert.equal(body.input.length, 2);
+    }
+  });
+
+  it('returns positional invalid responses for malformed JSON and maps them to public nulls', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected token')),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcomes = await embedDetailed(['first', 'second'], 'document');
+    const publicResults = await embed(['first', 'second'], 'document');
+
+    assert.equal(fetchMock.mock.calls.length, 2);
+    assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'invalid_response'));
+    assert.deepEqual(publicResults, [null, null]);
+  });
+
+  it('handles an unreadable error body as positional invalid responses', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.reject(new Error('body stream failed')),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const outcomes = await embedDetailed(['first', 'second'], 'document');
+
+    assert.equal(fetchMock.mock.calls.length, 1);
+    assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'invalid_response'));
+  });
+
+  it('retries an unreadable body when its HTTP status is transient', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      text: () => Promise.reject(new Error('body stream failed')),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['first', 'second'], 'document');
+    await vi.runAllTimersAsync();
+    const outcomes = await outcomePromise;
+
+    assert.equal(fetchMock.mock.calls.length, 3);
+    assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'transient'));
+  });
+
+  for (const scenario of [
+    {
+      name: 'schema',
+      response: { data: [{ embedding: ['bad'], index: 0 }] },
+    },
+    {
+      name: 'index',
+      response: { data: [{ embedding: [0.1], index: 9 }] },
+    },
+    {
+      name: 'cardinality',
+      response: { data: [] },
+    },
+  ]) {
+    it(`localizes ${scenario.name} failures and exposes invalid_response outcomes`, async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => scenario.response,
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const outcomes = await embedDetailed(['first', 'second'], 'document');
+
+      assert.equal(fetchMock.mock.calls.length, 3);
+      assert.ok(outcomes.every((outcome) => !outcome.ok && outcome.kind === 'invalid_response'));
+    });
+  }
+});
 
 describe('embed() — API response validation', () => {
   const fakeEmb = Array.from({ length: 384 }, () => 0.1);
@@ -180,8 +566,6 @@ describe('embed() — API response validation', () => {
 });
 
 describe('embed() — retry and fallback', () => {
-  const fakeEmb = Array.from({ length: 384 }, () => 0.1);
-
   // 429 is transient: embedder retries twice (2s, 4s backoff) then returns [null].
   // Using fake timers avoids the real 6s delay.
   it('returns null for transient error after retries (429)', async () => {
@@ -200,32 +584,13 @@ describe('embed() — retry and fallback', () => {
     assert.equal(result[0], null);
   });
 
-  it('splits batch on failure and returns null for failed item', async () => {
-    // Batch of 2 fails with 500 (transient). Fallback retries each item individually.
-    // Each individual item that keeps failing retries 2 more times (2s/4s backoff) → null.
-    let callCount = 0;
+  it('retries a transient batch without singleton fanout', async () => {
+    const requestSizes: number[] = [];
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(() => {
-        callCount++;
-        if (callCount === 1) {
-          // Batch of 2 fails with 500 (transient) → triggers per-item fallback
-          return Promise.resolve({
-            ok: false,
-            status: 500,
-            text: () => Promise.resolve('Server error'),
-            json: () => ({ error: { message: 'Server error' } }),
-          });
-        }
-        // Individual call 2 succeeds
-        if (callCount === 2) {
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: () => ({ data: [{ embedding: fakeEmb, index: 0 }] }),
-          });
-        }
-        // Individual call 3 keeps failing with 500 → retries → ultimately null
+      vi.fn().mockImplementation((_url: string, init: { body: string }) => {
+        const body = JSON.parse(init.body) as { input: string[] };
+        requestSizes.push(body.input.length);
         return Promise.resolve({
           ok: false,
           status: 500,
@@ -239,10 +604,8 @@ describe('embed() — retry and fallback', () => {
     await vi.runAllTimersAsync();
     const result = await embedPromise;
     assert.equal(result.length, 2);
-    const hasNull = result.some((r) => r === null);
-    const hasArray = result.some((r) => r instanceof Float32Array);
-    assert.ok(hasNull, 'should have at least one null');
-    assert.ok(hasArray, 'should have at least one embedding');
+    assert.deepEqual(result, [null, null]);
+    assert.deepEqual(requestSizes, [2, 2, 2]);
   });
 
   it('returns all null when all items fail', async () => {
@@ -269,25 +632,198 @@ describe('embed() — Ollama throttling', () => {
     process.env.OPENAI_BASE_URL = 'https://api.test/v1';
   });
 
-  it('sends one text at a time to Ollama endpoint (batch size 1)', async () => {
+  for (const baseUrl of [
+    'http://localhost:11434',
+    'http://localhost:11434/',
+    'http://localhost:11434/v1',
+    'http://localhost:11434/v1/',
+  ]) {
+    it(`normalizes ${baseUrl} to native embed with truncation disabled`, async () => {
+      process.env.OPENAI_BASE_URL = baseUrl;
+      process.env.OPENAI_EMBEDDING_MODEL = 'bge-m3:latest';
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => ({ embeddings: [[0.1, 0.2]] }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const [embedding] = await embed(['text'], 'document');
+
+      assert.ok(embedding instanceof Float32Array);
+      assert.equal(fetchMock.mock.calls[0]?.[0], 'http://localhost:11434/api/embed');
+      const body = JSON.parse((fetchMock.mock.calls[0]?.[1] as { body: string }).body) as {
+        model: string;
+        input: string[];
+        truncate: boolean;
+      };
+      assert.deepEqual(body, { model: 'bge-m3:latest', input: ['text'], truncate: false });
+    });
+  }
+
+  it('sends one native request per input and preserves positional results', async () => {
     const capturedBodies: string[][] = [];
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation((_url: string, opts: { body: string }) => {
         const body = JSON.parse(opts.body) as { input: string[] };
         capturedBodies.push(body.input);
+        const value = body.input[0] === 'text1' ? 0.1 : body.input[0] === 'text2' ? 0.2 : 0.3;
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => ({ data: [{ embedding: fakeEmb, index: 0 }] }),
+          json: () => ({ embeddings: [[value, value]] }),
         });
       }),
     );
-    await embed(['text1', 'text2', 'text3'], 'document');
+    const results = await embed(['text1', 'text2', 'text3'], 'document');
     for (const body of capturedBodies) {
       assert.equal(body.length, 1, `Ollama batch should be 1, got ${body.length}`);
     }
     assert.equal(capturedBodies.length, 3, 'should make 3 requests for 3 texts');
+    assert.deepEqual(
+      results.map((embedding) => (embedding ? Number(embedding[0]!.toFixed(1)) : undefined)),
+      [0.1, 0.2, 0.3],
+    );
+  });
+
+  for (const status of [404, 405]) {
+    it(`falls back once to the compatible endpoint after native HTTP ${status}`, async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status,
+          text: () => Promise.resolve(JSON.stringify({ error: 'not found' })),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => ({ data: [{ embedding: fakeEmb, index: 0 }] }),
+        });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const [outcome] = await embedDetailed(['text'], 'document');
+
+      assert.ok(outcome?.ok);
+      assert.deepEqual(
+        fetchMock.mock.calls.map(([url]) => String(url)),
+        ['http://localhost:11434/api/embed', 'http://localhost:11434/v1/embeddings'],
+      );
+    });
+  }
+
+  it('does not retry a transient compatible failure after one native fallback', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/api/embed')) {
+        return Promise.resolve({
+          ok: false,
+          status: 404,
+          text: () => Promise.resolve(JSON.stringify({ error: 'not found' })),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 502,
+        text: () => Promise.resolve(JSON.stringify({ error: { message: 'bad gateway' } })),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['text'], 'document');
+    await vi.runAllTimersAsync();
+    const [outcome] = await outcomePromise;
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'transient');
+    assert.deepEqual(
+      fetchMock.mock.calls.map(([url]) => String(url)),
+      ['http://localhost:11434/api/embed', 'http://localhost:11434/v1/embeddings'],
+    );
+  });
+
+  it('does not use the compatible endpoint for other native failures', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve(JSON.stringify({ error: 'invalid model' })),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const [outcome] = await embedDetailed(['text'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'permanent');
+    assert.equal(fetchMock.mock.calls.length, 1);
+    assert.equal(fetchMock.mock.calls[0]?.[0], 'http://localhost:11434/api/embed');
+  });
+
+  it('retries native 5xx failures without compatible endpoint calls', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 520,
+      text: () => Promise.resolve(JSON.stringify({ error: 'provider unavailable' })),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    vi.useFakeTimers();
+
+    const outcomePromise = embedDetailed(['text'], 'document');
+    await vi.runAllTimersAsync();
+    const [outcome] = await outcomePromise;
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'transient');
+    assert.deepEqual(
+      fetchMock.mock.calls.map(([url]) => String(url)),
+      Array.from({ length: 3 }, () => 'http://localhost:11434/api/embed'),
+    );
+  });
+
+  it('classifies a native context rejection as input_too_long', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({ error: 'input length exceeds the context token limit' }),
+          ),
+      }),
+    );
+
+    const [outcome] = await embedDetailed(['text'], 'document');
+
+    assert.ok(outcome && !outcome.ok);
+    assert.equal(outcome.kind, 'input_too_long');
+  });
+
+  it('uses the untagged model only for known context lookup', async () => {
+    process.env.OPENAI_EMBEDDING_MODEL = 'bge-m3:latest';
+    clearOllamaSemaphore();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    assert.equal(await getContextLength(), 8192);
+    assert.equal(fetchMock.mock.calls.length, 0);
+  });
+
+  it('does not normalize model tags for non-Ollama context lookup', async () => {
+    process.env.OPENAI_BASE_URL = 'https://api.test/v1';
+    process.env.OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small:latest';
+    clearOllamaSemaphore();
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: () => ({ context_length: 1234 }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    assert.equal(await getContextLength(), 1234);
+    assert.equal(fetchMock.mock.calls.length, 1);
+    assert.equal(
+      fetchMock.mock.calls[0]?.[0],
+      'https://api.test/v1/models/text-embedding-3-small:latest',
+    );
   });
 });
 
@@ -309,27 +845,46 @@ describe('embed() — prefix logic', () => {
     );
   });
 
-  it('adds "passage: " prefix for E5 model document embedding', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'intfloat/multilingual-e5-large';
-    await embed(['hello'], 'document');
-    assert.equal(capturedBody.input[0], 'passage: hello');
-  });
+  const prefixCases: {
+    name: string;
+    model: string;
+    type: 'document' | 'query';
+    input: string;
+    expected: string;
+  }[] = [
+    {
+      name: 'adds "passage: " prefix for E5 model document embedding',
+      model: 'intfloat/multilingual-e5-large',
+      type: 'document',
+      input: 'hello',
+      expected: 'passage: hello',
+    },
+    {
+      name: 'adds "query: " prefix for E5 model query embedding',
+      model: 'intfloat/multilingual-e5-large',
+      type: 'query',
+      input: 'search',
+      expected: 'query: search',
+    },
+    {
+      name: 'does NOT add prefix for non-E5 model (text-embedding-3-small)',
+      model: 'text-embedding-3-small',
+      type: 'document',
+      input: 'hello',
+      expected: 'hello',
+    },
+    {
+      name: 'does NOT add prefix for BGE model',
+      model: 'baai/bge-m3',
+      type: 'document',
+      input: 'hello',
+      expected: 'hello',
+    },
+  ];
 
-  it('adds "query: " prefix for E5 model query embedding', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'intfloat/multilingual-e5-large';
-    await embed(['search'], 'query');
-    assert.equal(capturedBody.input[0], 'query: search');
-  });
-
-  it('does NOT add prefix for non-E5 model (text-embedding-3-small)', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
-    await embed(['hello'], 'document');
-    assert.equal(capturedBody.input[0], 'hello');
-  });
-
-  it('does NOT add prefix for BGE model', async () => {
-    process.env.OPENAI_EMBEDDING_MODEL = 'baai/bge-m3';
-    await embed(['hello'], 'document');
-    assert.equal(capturedBody.input[0], 'hello');
+  it.each(prefixCases)('$name', async ({ model, type, input, expected }) => {
+    process.env.OPENAI_EMBEDDING_MODEL = model;
+    await embed([input], type);
+    assert.equal(capturedBody.input[0], expected);
   });
 });

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { buildMatchText } from './chunker.js';
+import { buildMatchText, buildMatchTextFromMarkedSnippet, stripSnippetMarkers } from './chunker.js';
 import { config } from './config.js';
 import {
   filterNotePathsByFrontmatter,
@@ -12,13 +12,13 @@ import {
   getMarkdownLinksForPaths,
   getMatchingNotesByFrontmatter,
   getNoteByPath,
-  getOutgoingLinks,
   getOutgoingLinksForPaths,
   getUrlsForPaths,
   hasVecTable,
   resolveNotePath,
 } from './db.js';
 import { embed } from './embedder.js';
+import { buildFilterPredicate, hasFilterValue, type FilterPredicate } from './filter-predicate.js';
 import {
   extractMarkdownReferenceOccurrences,
   resolveMarkdownNoteLinks,
@@ -140,7 +140,7 @@ interface RawResult {
   bm25Anchor?: MatchAnchor;
 }
 
-function matchesScopeFilter(notePath: string, scope: string | string[]): boolean {
+export function matchesScopeFilter(notePath: string, scope: string | string[]): boolean {
   const scopes = (Array.isArray(scope) ? scope : [scope]).map((s) => s.normalize('NFD'));
   const includes = scopes.filter((s) => !s.startsWith('-'));
   const excludes = scopes.filter((s) => s.startsWith('-')).map((s) => s.slice(1));
@@ -154,11 +154,6 @@ function matchesScopeFilter(notePath: string, scope: string | string[]): boolean
   // Multiple includes = OR logic (note must match ANY of the includes)
   if (includes.length === 0) return true;
   return includes.some((inc) => scopeMatches(notePath, inc));
-}
-
-function applyScope(results: RawResult[], scope?: string | string[]): RawResult[] {
-  if (!scope) return results;
-  return results.filter((r) => matchesScopeFilter(r.path, scope));
 }
 
 function applyThreshold(results: RawResult[], threshold: number): RawResult[] {
@@ -250,22 +245,52 @@ type FtsRow = {
   rank: number;
 };
 
+// Sentinel markers bracketing the actual FTS match inside snippet() output. A snippet
+// window spans several sentences, so the true match isn't necessarily on its first
+// line — these let buildMatchTextFromMarkedSnippet find the right one. Stripped from
+// every snippet before it's exposed on RawResult; control chars won't appear in notes.
+const SNIPPET_MARK_START = '';
+const SNIPPET_MARK_END = '';
+
+/**
+ * The `AND <predicate>` fragment and the params to splice, or empty strings/arrays when
+ * no filter is active.
+ *
+ * An inactive filter MUST contribute a byte-identical SQL string. Not for statement
+ * reuse — better-sqlite3 has no SQL-text statement cache, every db.prepare() compiles
+ * afresh — but because identical text is what keeps the unfiltered path's query plan and
+ * its output stable, which is the property the frozen output capture pins. An
+ * unconditional `AND 1` would hand SQLite a different statement to plan on every
+ * unfiltered query in the codebase for no gain.
+ */
+function filterFragment(predicate: FilterPredicate | undefined): {
+  clause: string;
+  params: Array<string | number>;
+} {
+  if (predicate === undefined || predicate.isEmpty) return { clause: '', params: [] };
+  return { clause: ` AND ${predicate.sql}`, params: predicate.params };
+}
+
 export function searchBm25(
   query: string,
   limit: number,
   snippetLength = 300,
   buildAnchors = false,
+  predicate?: FilterPredicate,
 ): RawResult[] {
   const db = getDb();
   const numTokens = Math.max(10, Math.ceil(snippetLength / 4));
-  const stmt = db.prepare<[number, string, number], FtsRow>(
+  const filter = filterFragment(predicate);
+  // Widened from the former fixed 5-tuple: the filter params are spliced in before
+  // `limit`, so the bind list is variable-length.
+  const stmt = db.prepare<Array<string | number>, FtsRow>(
     `
       SELECT n.path, n.title, n.tags, n.aliases,
-             snippet(notes_fts_bm25, 2, '', '', '...', ?) AS snippet,
+             snippet(notes_fts_bm25, 2, ?, ?, '...', ?) AS snippet,
              bm25(notes_fts_bm25, 10.0, 5.0, 1.0) AS rank
       FROM notes_fts_bm25
       JOIN notes n ON n.id = notes_fts_bm25.rowid
-      WHERE notes_fts_bm25 MATCH ?
+      WHERE notes_fts_bm25 MATCH ?${filter.clause}
       ORDER BY rank
       LIMIT ?
     `,
@@ -277,14 +302,21 @@ export function searchBm25(
     // relevant documents whenever a single query word (e.g. "between", "organize")
     // was absent from the document—even if that document was the best conceptual
     // match for every other term in the query.
-    const rows = stmt.all(numTokens, toFtsQuery(query, 'OR'), limit);
+    const rows = stmt.all(
+      SNIPPET_MARK_START,
+      SNIPPET_MARK_END,
+      numTokens,
+      toFtsQuery(query, 'OR'),
+      ...filter.params,
+      limit,
+    );
 
     const results: RawResult[] = rows.map((row) => ({
       path: row.path,
       title: row.title ?? '',
       tags: row.tags ?? '[]',
       aliases: row.aliases,
-      snippet: row.snippet ?? '',
+      snippet: stripSnippetMarkers(row.snippet ?? '', SNIPPET_MARK_START, SNIPPET_MARK_END),
       score: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
       scores: {
         bm25: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
@@ -294,21 +326,25 @@ export function searchBm25(
     // Skip when neither is needed (snippetLength=0 and buildAnchors=false).
     if (snippetLength > 0 || buildAnchors) {
       const chunkDataMap = getChunkDataForBm25Results(results);
-      for (const result of results) {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]!;
         const data = chunkDataMap.get(result.path);
         if (data) {
           if (snippetLength > 0 && data.headingPath) {
             result.snippet = `${data.headingPath}\n${result.snippet}`;
           }
           if (buildAnchors) {
-            // Use the BM25 snippet (positioned near the match) for matchText, not the full chunk.
-            // Strip SQLite snippet ellipsis markers and HTML tags before extracting match text.
-            // Remove all SQLite snippet ellipsis markers (may appear anywhere in the text)
-            const snippetForMatch = result.snippet.replace(/\.\.\./g, '');
+            // Use the still-marked raw snippet (positioned near the match) for matchText,
+            // not the full chunk — the sentinel markers pin down which line is the real hit.
+            const rawSnippet = (rows[i]!.snippet ?? '').replace(/\.\.\./g, '');
             result.bm25Anchor = {
               kind: 'bm25',
               headingPath: data.headingPath,
-              matchText: buildMatchText(snippetForMatch),
+              matchText: buildMatchTextFromMarkedSnippet(
+                rawSnippet,
+                SNIPPET_MARK_START,
+                SNIPPET_MARK_END,
+              ),
               charStart: data.charStart,
               charEnd: data.charEnd,
             };
@@ -361,9 +397,14 @@ function calculateTrigramOverlap(query: string, title: string): number {
  * Handles short aliases (< 3 chars) that the trigram FTS index can't tokenize,
  * and Cyrillic / non-ASCII aliases that SQLite's lower() doesn't fold correctly.
  */
-function searchByAliasExact(query: string, limit: number): RawResult[] {
+function searchByAliasExact(
+  query: string,
+  limit: number,
+  predicate?: FilterPredicate,
+): RawResult[] {
   const db = getDb();
   const queryNfd = query.normalize('NFD').toLowerCase();
+  const filter = filterFragment(predicate);
 
   const rows = db
     .prepare(
@@ -371,11 +412,11 @@ function searchByAliasExact(query: string, limit: number): RawResult[] {
       SELECT DISTINCT n.path, n.title, n.tags, n.aliases
       FROM note_aliases a
       JOIN notes n ON n.id = a.note_id
-      WHERE a.alias_norm = ?
+      WHERE a.alias_norm = ?${filter.clause}
       LIMIT ?
     `,
     )
-    .all(queryNfd, limit) as Array<{
+    .all(queryNfd, ...filter.params, limit) as Array<{
     path: string;
     title: string;
     tags: string;
@@ -393,14 +434,25 @@ function searchByAliasExact(query: string, limit: number): RawResult[] {
   }));
 }
 
-export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
+/**
+ * `predicate` is optional because readNotes() calls this for path-miss suggestions,
+ * where the caller's filters must NOT apply.
+ */
+export function searchFuzzyTitle(
+  query: string,
+  limit: number,
+  predicate?: FilterPredicate,
+): RawResult[] {
   // Exact alias match first — handles short aliases (< 3 chars) and Cyrillic that
   // the trigram FTS can't tokenize, ensuring they always surface in title/hybrid mode.
-  const aliasExact = searchByAliasExact(query, limit);
+  // It MUST get the same predicate: alias hits enter RRF at weight 2.0, and once the
+  // post-filter is gone there is nothing downstream left to drop unfiltered ones.
+  const aliasExact = searchByAliasExact(query, limit, predicate);
   const aliasExactPaths = new Set(aliasExact.map((r) => r.path));
 
   const db = getDb();
   const ftsQuery = buildTrigramOrQuery(query);
+  const filter = filterFragment(predicate);
 
   try {
     const ftsRows = db
@@ -410,12 +462,12 @@ export function searchFuzzyTitle(query: string, limit: number): RawResult[] {
              bm25(notes_fts_fuzzy) AS rank
       FROM notes_fts_fuzzy
       JOIN notes n ON n.id = notes_fts_fuzzy.rowid
-      WHERE notes_fts_fuzzy MATCH ?
+      WHERE notes_fts_fuzzy MATCH ?${filter.clause}
       ORDER BY rank
       LIMIT ?
     `,
       )
-      .all(ftsQuery, limit) as Array<{
+      .all(ftsQuery, ...filter.params, limit) as Array<{
       path: string;
       title: string;
       tags: string;
@@ -527,8 +579,7 @@ function getHeadingPathForSnippet(notePath: string, snippetText: string): string
 
   // Strategy 2: scan note content up to the snippet position
   const note = db.prepare('SELECT content FROM notes WHERE path = ?').get(notePath) as
-    | { content: string }
-    | undefined;
+    { content: string } | undefined;
   if (!note?.content) return null;
 
   const pos = note.content.indexOf(key);
@@ -537,11 +588,10 @@ function getHeadingPathForSnippet(notePath: string, snippetText: string): string
   const before = note.content.slice(0, pos);
   const headingSlots: (string | null)[] = [null, null, null, null, null, null];
   for (const line of before.split('\n')) {
-    const m = /^(#{1,6})\s+(.+)$/.exec(line.trim());
-    if (m) {
-      const level = m[1]!.length;
-      headingSlots[level - 1] = `${m[1]} ${m[2]}`;
-      for (let i = level; i < 6; i++) headingSlots[i] = null;
+    const heading = parseMarkdownHeadingLine(line);
+    if (heading) {
+      headingSlots[heading.level - 1] = `${heading.marker} ${heading.text}`;
+      for (let i = heading.level; i < 6; i++) headingSlots[i] = null;
     }
   }
   const chain = headingSlots.filter((s): s is string => s !== null);
@@ -665,18 +715,104 @@ function getHeadingPathFromContent(content: string, key: string): string | null 
   const before = content.slice(0, pos);
   const headingSlots: (string | null)[] = [null, null, null, null, null, null];
   for (const line of before.split('\n')) {
-    const match = /^(#{1,6})\s+(.+)$/.exec(line.trim());
-    if (!match) continue;
-    const level = match[1]!.length;
-    headingSlots[level - 1] = `${match[1]} ${match[2]}`;
-    for (let i = level; i < 6; i++) headingSlots[i] = null;
+    const heading = parseMarkdownHeadingLine(line);
+    if (!heading) continue;
+    headingSlots[heading.level - 1] = `${heading.marker} ${heading.text}`;
+    for (let i = heading.level; i < 6; i++) headingSlots[i] = null;
   }
   const chain = headingSlots.filter((heading): heading is string => heading !== null);
   return chain.length > 0 ? chain.join(' > ') : null;
 }
 
-function searchVector(queryEmbedding: Float32Array, limit: number): RawResult[] {
+function parseMarkdownHeadingLine(
+  line: string,
+): { level: number; marker: string; text: string } | null {
+  const trimmed = line.trim();
+  let level = 0;
+  while (level < 6 && trimmed[level] === '#') level++;
+  if (level === 0 || !isMarkdownWhitespace(trimmed[level] ?? '')) return null;
+
+  let textStart = level + 1;
+  while (textStart < trimmed.length && isMarkdownWhitespace(trimmed[textStart]!)) textStart++;
+  const text = trimmed.slice(textStart);
+  if (!text) return null;
+  return { level, marker: '#'.repeat(level), text };
+}
+
+function isMarkdownWhitespace(char: string): boolean {
+  return char === ' ' || char === '\t' || char === '\r' || char === '\n' || char === '\f';
+}
+
+/**
+ * Hard ceiling sqlite-vec enforces on a KNN `k`. Exceeding it throws
+ * "k value in knn query too large", which the catch below used to swallow into an
+ * empty result — so any search with limit > 819 (k = limit * 5) silently returned
+ * nothing, on every vault regardless of size. Clamp instead: k = 4096 already
+ * over-fetches far past any sane result count, and the outer LIMIT does the trimming.
+ */
+const VEC_MAX_K = 4096;
+
+/**
+ * @param excludeLinkedFrom when set, omits that note and everything it links to —
+ *   the "already known" set for a similarity lookup.
+ */
+function searchVector(
+  queryEmbedding: Float32Array,
+  limit: number,
+  predicate?: FilterPredicate,
+  excludeLinkedFrom?: string,
+): RawResult[] {
   if (!hasVecTable()) return [];
+
+  // ── The vector arm's restriction form is the OPPOSITE of the FTS arms', and the
+  // wrong one fails SILENTLY. sqlite-vec pre-filters a KNN ONLY when the restriction
+  // is on its primary key as `vc.chunk_id IN (subquery)`. The correlated
+  // `EXISTS (… WHERE nt.note_id = n.id …)` form — exactly what searchBm25 and
+  // searchFuzzyTitle correctly use — compiles to a POST-filter here: k is taken first
+  // and the restriction then throws the survivors away, so a narrow filter returns 0
+  // rows instead of `limit`. Measured. Do NOT "harmonize" these two forms.
+  // sqlite-vec applies a KNN restriction BEFORE taking k only when it is expressed
+  // positively on the primary key, as `vc.chunk_id IN (subquery)`. `NOT IN` is NOT
+  // recognized by that optimization: k is taken first and the exclusion then discards
+  // the survivors, so a source note whose links fill the top-k returns nothing.
+  // Measured. Everything therefore collapses into ONE positive `IN`, with the
+  // exclusion carried inside it as a `NOT IN` over note ids — cheap there, because by
+  // that point we are already inside a plain SQL subquery rather than the KNN itself.
+  //
+  // Do not "harmonize" this with the correlated EXISTS the FTS arms use: that form
+  // compiles to a post-filter here and silently returns zero rows.
+  const conditions: string[] = [];
+  const extraParams: Array<string | number> = [];
+
+  if (predicate !== undefined && !predicate.isEmpty) {
+    // The predicate's clauses reference the alias `n`; inside this subquery the notes
+    // table is aliased `n2` so it cannot shadow the outer join above.
+    conditions.push(predicate.sql.replace(/\bn\./g, 'n2.'));
+    extraParams.push(...predicate.params);
+  }
+
+  if (excludeLinkedFrom !== undefined) {
+    // Driven from `links` rather than a correlated EXISTS: the correlated form forces
+    // a full chunk scan and doubled the arm's cost (7.33 ms vs 4.94 ms on a 157-link
+    // hub note). A bound parameter list is impossible — hub notes can have thousands
+    // of links and such a list cannot be batched inside a single k-limited KNN.
+    conditions.push(
+      `c2.note_id NOT IN (
+             SELECT n4.id FROM notes n4 WHERE n4.path = ?
+             UNION
+             SELECT n5.id FROM notes n5 JOIN links l ON l.to_path = n5.path WHERE l.from_path = ?)`,
+    );
+    extraParams.push(excludeLinkedFrom, excludeLinkedFrom);
+  }
+
+  const restrictions =
+    conditions.length === 0
+      ? []
+      : [
+          `vc.chunk_id IN (SELECT c2.id FROM chunks c2 JOIN notes n2 ON n2.id = c2.note_id WHERE ${conditions.join(' AND ')})`,
+        ];
+
+  const restrictionSql = restrictions.map((r) => `\n          AND ${r}`).join('');
 
   return measureSearchStageSync('vectorSearch', () => {
     const db = getDb();
@@ -695,7 +831,7 @@ function searchVector(queryEmbedding: Float32Array, limit: number): RawResult[] 
         JOIN chunks c ON c.id = vc.chunk_id
         JOIN notes n ON n.id = c.note_id
         WHERE vc.embedding MATCH ?
-          AND k = ?
+          AND k = ?${restrictionSql}
       )
       SELECT chunk_id, distance, note_id, chunk_index, chunk_text, heading_path,
              char_start, char_end, path, title, tags, aliases
@@ -705,7 +841,9 @@ function searchVector(queryEmbedding: Float32Array, limit: number): RawResult[] 
       LIMIT ?
     `,
         )
-        .all(queryEmbedding, limit * 5, limit) as Array<{
+        // `k` is validated by sqlite-vec BEFORE the pre-filter runs, so the VEC_MAX_K
+        // clamp stays regardless of how narrow the restriction is.
+        .all(queryEmbedding, Math.min(limit * 5, VEC_MAX_K), ...extraParams, limit) as Array<{
         chunk_id: number;
         distance: number;
         note_id: number;
@@ -741,7 +879,12 @@ function searchVector(queryEmbedding: Float32Array, limit: number): RawResult[] 
           },
         };
       });
-    } catch {
+    } catch (error) {
+      // Never swallow silently: an empty vector result is indistinguishable from
+      // "no semantic matches", which hid the k-ceiling bug above for a long time.
+      process.stderr.write(
+        `Vector search failed: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
       return [];
     }
   });
@@ -904,8 +1047,7 @@ function getCachedNoteContent(
   const cached = cache.get(notePath);
   if (cached !== undefined) return cached;
   const note = db.prepare('SELECT content FROM notes WHERE path = ?').get(notePath) as
-    | { content: string }
-    | undefined;
+    { content: string } | undefined;
   const content = note?.content ?? '';
   cache.set(notePath, content);
   return content;
@@ -929,8 +1071,7 @@ function searchRelated(
     const note = db
       .prepare('SELECT path, title, tags, aliases FROM notes WHERE path = ?')
       .get(notePth) as
-      | { path: string; title: string; tags: string; aliases: string | null }
-      | undefined;
+      { path: string; title: string; tags: string; aliases: string | null } | undefined;
     if (!note) return null;
     let tags: string[];
     try {
@@ -1153,6 +1294,10 @@ export function bumpIndexVersion(): void {
   localVersion++;
 }
 
+/** Ceiling used when the caller asks for "no limit" (limit === 0). Mirrors the
+ *  filter-only branch's FETCH_ALL so both paths cap the vault the same way. */
+const UNLIMITED_RESULTS = 10000;
+
 function cacheKey(input: string, options: SearchOptions): string {
   const scopeStr = Array.isArray(options.scope) ? options.scope.join(',') : (options.scope ?? '');
   const tagStr = Array.isArray(options.tag) ? options.tag.join(',') : (options.tag ?? '');
@@ -1175,6 +1320,7 @@ export async function search(input: string, options: SearchOptions = {}): Promis
   const mode = options.mode ?? 'hybrid';
   const limit = options.limit ?? 10;
   const threshold = options.threshold ?? 0.0;
+  const noLimit = limit === 0;
   const snippetLength = options.snippetLength ?? 300;
 
   // Path-based lookup when --path is given explicitly, OR when related mode is
@@ -1212,21 +1358,20 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     if (cached) return cached;
     let related = searchRelated(resolvedPath, maxDepth, direction, snippetLength, linkType);
     // Apply scope, tag, and frontmatter filters (related bypasses the normal pipeline)
-    if (options.scope) related = related.filter((r) => matchesScopeFilter(r.path, options.scope!));
-    if (options.tag && (!Array.isArray(options.tag) || options.tag.length > 0)) {
+    if (hasFilterValue(options.scope)) {
+      related = related.filter((r) => matchesScopeFilter(r.path, options.scope!));
+    }
+    if (hasFilterValue(options.tag)) {
       const allowedPaths = filterNotePathsByTag(
         related.map((result) => result.path),
-        options.tag,
+        options.tag!,
       );
       related = related.filter((result) => allowedPaths.has(result.path));
     }
-    if (
-      options.frontmatter &&
-      (!Array.isArray(options.frontmatter) || options.frontmatter.length > 0)
-    ) {
+    if (hasFilterValue(options.frontmatter)) {
       const allowedPaths = filterNotePathsByFrontmatter(
         related.map((result) => result.path),
-        options.frontmatter,
+        options.frontmatter!,
       );
       related = related.filter((result) => allowedPaths.has(result.path));
     }
@@ -1251,11 +1396,9 @@ export async function search(input: string, options: SearchOptions = {}): Promis
 
   // Filter-only mode: no text query, but filters present (frontmatter, tag, scope)
   // Return all matching notes sorted by title
-  const hasFrontmatterFilter =
-    options.frontmatter && (!Array.isArray(options.frontmatter) || options.frontmatter.length > 0);
-  const hasTagFilter = options.tag && (!Array.isArray(options.tag) || options.tag.length > 0);
-  const hasScopeFilter =
-    options.scope && (!Array.isArray(options.scope) || options.scope.length > 0);
+  const hasFrontmatterFilter = hasFilterValue(options.frontmatter);
+  const hasTagFilter = hasFilterValue(options.tag);
+  const hasScopeFilter = hasFilterValue(options.scope);
 
   if (!input && !isPathLookup && (hasFrontmatterFilter || hasTagFilter || hasScopeFilter)) {
     const fmKey = cacheKey('', options);
@@ -1340,15 +1483,34 @@ export async function search(input: string, options: SearchOptions = {}): Promis
 
   let results: RawResult[];
 
+  // limit === 0 means "no limit" — the semantics the filter-only branch above
+  // already implements and the CLI/MCP flags document. Retrieval still needs a
+  // finite pool, so it borrows the same ceiling the filter-only branch uses; the
+  // final slice below is what is actually skipped.
+  const retrievalLimit = noLimit ? UNLIMITED_RESULTS : limit;
+
+  // Built ONCE and threaded into every retrieval arm, so the filter narrows the pool
+  // the query itself scans instead of trimming an already-truncated result list. A
+  // narrow filter used to return nothing at a small limit for exactly that reason.
+  const predicate = buildFilterPredicate(options);
+
   if (isPathLookup) {
-    results = await searchSimilar(resolvedPath, limit);
+    results = await searchSimilar(resolvedPath, retrievalLimit, predicate);
   } else if (options.queries && options.queries.length > 1) {
     // Multi-query fan-out: run each query in parallel, merge via RRF, then rerank once.
     // Each sub-search uses a larger candidate pool so RRF has enough signal to rank correctly.
-    const candidateLimit = Math.max(limit * 2, 20);
+    const candidateLimit = Math.max(retrievalLimit * 2, 20);
     const perQueryResults = await Promise.all(
       options.queries.map((q) =>
-        searchByQuery(q, mode, candidateLimit, snippetLength, false, options.anchors ?? false),
+        searchByQuery(
+          q,
+          mode,
+          candidateLimit,
+          snippetLength,
+          false,
+          options.anchors ?? false,
+          predicate,
+        ),
       ),
     );
     results = measureSearchStageSync('rrfFusion', () => rrfFusion(perQueryResults, 60));
@@ -1370,26 +1532,22 @@ export async function search(input: string, options: SearchOptions = {}): Promis
     results = await searchByQuery(
       input,
       mode,
-      limit,
+      retrievalLimit,
       snippetLength,
       options.rerank ?? false,
       options.anchors ?? false,
+      predicate,
     );
   }
 
   const { filteredResults, final } = measureSearchStageSync('filterAndFormat', () => {
-    let filteredResults = applyScope(results, options.scope);
-    filteredResults = applyThreshold(filteredResults, threshold);
-    if (options.tag && (!Array.isArray(options.tag) || options.tag.length > 0)) {
-      filteredResults = applyTagFilter(filteredResults, options.tag);
-    }
-    if (
-      options.frontmatter &&
-      (!Array.isArray(options.frontmatter) || options.frontmatter.length > 0)
-    ) {
-      filteredResults = applyFrontmatterFilter(filteredResults, options.frontmatter);
-    }
-    filteredResults = filteredResults.slice(0, limit);
+    // Scope, tag and frontmatter are pushed into every retrieval arm as a SQL
+    // predicate, so there is nothing left for them to trim here. applyThreshold
+    // STAYS: it is a score cutoff, cannot be expressed as a predicate over `notes`,
+    // and deleting it silently turns --threshold into a no-op. It must keep running
+    // BEFORE the final slice, or a below-threshold result would consume a slot.
+    let filteredResults = applyThreshold(results, threshold);
+    if (!noLimit) filteredResults = filteredResults.slice(0, limit);
 
     const paths = filteredResults.map((r) => r.path);
     const { links, backlinks } = getLinksForPaths(paths);
@@ -1501,9 +1659,11 @@ async function applyRerank(
     fetchMissingChunkTexts(candidates); // sync — better-sqlite3 has no async API
     const rerankScores = await reranker.scoreAll(
       query,
-      candidates.map(
-        (c): RerankCandidate => ({ title: c.title, chunkText: c.chunkText, snippet: c.snippet }),
-      ),
+      candidates.map((c): RerankCandidate => ({
+        title: c.title,
+        chunkText: c.chunkText,
+        snippet: c.snippet,
+      })),
     );
     // Position-aware blending: mix normalized hybrid score with sigmoid(logit).
     // Pre-rerank hybrid position determines how much we trust retrieval vs reranker:
@@ -1547,6 +1707,7 @@ async function searchByQuery(
   snippetLength: number,
   rerank = false,
   buildAnchors = false,
+  predicate?: FilterPredicate,
 ): Promise<RawResult[]> {
   if (rerank && mode !== 'hybrid') {
     process.stderr.write('Reranking is only supported in hybrid mode. Ignoring --rerank.\n');
@@ -1555,7 +1716,7 @@ async function searchByQuery(
 
   if (mode === 'fulltext') {
     return measureSearchStageSync('bm25', () =>
-      searchBm25(query, limit, snippetLength, buildAnchors),
+      searchBm25(query, limit, snippetLength, buildAnchors, predicate),
     );
   }
 
@@ -1566,7 +1727,7 @@ async function searchByQuery(
     // dropped before scoring. Only done for title mode — hybrid uses rrfFusion which
     // depends on the original BM25 ordering from searchFuzzyTitle.
     const candidates = measureSearchStageSync('fuzzyTitle', () =>
-      searchFuzzyTitle(query, Math.max(limit * 5, 50)),
+      searchFuzzyTitle(query, Math.max(limit * 5, 50), predicate),
     );
     return candidates.sort((a, b) => b.score - a.score).slice(0, limit);
   }
@@ -1576,7 +1737,7 @@ async function searchByQuery(
     // If embedding permanently failed after retries, return empty rather than
     // polluting results with uniform zero-vector scores.
     if (!f32) return [];
-    return searchVector(f32, limit);
+    return searchVector(f32, limit, predicate);
   }
 
   // hybrid: RRF fusion of all three
@@ -1592,13 +1753,15 @@ async function searchByQuery(
   const [bm25Results, fuzzyResults, vectorResults] = await Promise.all([
     Promise.resolve(
       measureSearchStageSync('bm25', () =>
-        searchBm25(query, candidateLimit, snippetLength, buildAnchors),
+        searchBm25(query, candidateLimit, snippetLength, buildAnchors, predicate),
       ),
     ),
     Promise.resolve(
-      measureSearchStageSync('fuzzyTitle', () => searchFuzzyTitle(query, candidateLimit)),
+      measureSearchStageSync('fuzzyTitle', () =>
+        searchFuzzyTitle(query, candidateLimit, predicate),
+      ),
     ),
-    f32 ? searchVector(f32, candidateLimit) : Promise.resolve([]),
+    f32 ? searchVector(f32, candidateLimit, predicate) : Promise.resolve([]),
   ]);
 
   // Exact alias matches (fuzzy_title=1.0) are canonical identity signals — treated like BM25.
@@ -1625,36 +1788,53 @@ async function searchByQuery(
   return results;
 }
 
-async function searchSimilar(notePath: string, limit: number): Promise<RawResult[]> {
+/**
+ * Source vectors for a similarity lookup.
+ *
+ * Prefers the chunk embeddings stored at index time — re-embedding would truncate
+ * long notes (the local model caps at 512 tokens). Falls back to re-embedding the
+ * whole note only when it was indexed without embeddings, e.g. the API was down.
+ *
+ * The "already known" set (the note itself plus everything it links to) is NOT
+ * resolved here: it is pushed into the KNN as a SQL restriction, so it narrows the
+ * pool the query scans instead of eating into an already-truncated top-N.
+ */
+async function getSimilaritySource(normalizedPath: string): Promise<Float32Array[] | null> {
+  const note = getNoteByPath(normalizedPath);
+  if (!note) return null;
+
+  const stored = getChunkEmbeddingsByPath(normalizedPath);
+  if (stored.length > 0) return stored;
+
+  const f32 = await embedQuery(`${note.title}\n\n${note.content}`);
+  if (!f32) return null;
+  return [f32];
+}
+
+/**
+ * KNN similarity to a note, with the tag/scope/frontmatter filter and the
+ * self+outgoing-link exclusion both applied INSIDE the KNN.
+ *
+ * There is no `limit + 1` over-fetch: it existed only to absorb self-exclusion after
+ * the fact, and the exclusion is now part of the query.
+ */
+async function searchSimilar(
+  notePath: string,
+  limit: number,
+  predicate?: FilterPredicate,
+): Promise<RawResult[]> {
   // macOS stores filenames as NFD; normalize to match DB paths
   const normalizedPath = notePath.normalize('NFD');
-  const note = getNoteByPath(normalizedPath);
-  if (!note) return [];
+  const embeddings = await getSimilaritySource(normalizedPath);
+  if (!embeddings) return [];
 
-  // Use already-stored chunk embeddings — avoids redundant re-embedding and truncation
-  // (the local model caps at 512 tokens, so long notes lose their tail when re-embedded).
-  // Each chunk was embedded at index time; we search with each and merge by max score.
-  const chunkEmbeddings = getChunkEmbeddingsByPath(normalizedPath);
-
-  if (chunkEmbeddings.length === 0) {
-    // Fallback: note was never indexed with embeddings (e.g. embedding API was down)
-    const f32 = await embedQuery(`${note.title}\n\n${note.content}`);
-    if (!f32) return [];
-    const excluded = new Set([note.path, ...getOutgoingLinks(normalizedPath)]);
-    return searchVector(f32, limit + 1)
-      .filter((r) => !excluded.has(r.path))
-      .slice(0, limit);
-  }
-
-  // Exclude the source note itself and notes it already links to — they are already known.
-  const excluded = new Set([note.path, ...getOutgoingLinks(normalizedPath)]);
-
-  // Run vector search per chunk, deduplicate by path keeping the max score
-  const allResults = chunkEmbeddings.flatMap((f32) => searchVector(f32, limit + 1));
+  // Run vector search per source chunk, deduplicate by path keeping the max score
+  const allResults = embeddings.flatMap((f32) =>
+    searchVector(f32, limit, predicate, normalizedPath),
+  );
 
   const byPath = new Map<string, RawResult>();
   for (const r of allResults) {
-    if (excluded.has(r.path)) continue;
     const existing = byPath.get(r.path);
     if (!existing || r.score > existing.score) byPath.set(r.path, r);
   }

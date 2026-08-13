@@ -36,7 +36,7 @@ function normalizeAlias(alias: string): string {
   return alias.normalize('NFD').toLowerCase();
 }
 
-function normalizeTag(tag: string): string {
+export function normalizeTag(tag: string): string {
   return tag.normalize('NFD').toLowerCase();
 }
 
@@ -333,8 +333,7 @@ function runMigrations(db: DB): void {
 
   const aliasLookupVersion = (
     db.prepare("SELECT value FROM settings WHERE key = 'alias_lookup_version'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
 
   if (aliasLookupVersion !== '1') {
@@ -349,8 +348,7 @@ function runMigrations(db: DB): void {
 
   const tagLookupVersion = (
     db.prepare("SELECT value FROM settings WHERE key = 'tag_lookup_version'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
 
   if (tagLookupVersion !== '1') {
@@ -377,8 +375,7 @@ function runMigrations(db: DB): void {
 
   const fmLookupVersion = (
     db.prepare("SELECT value FROM settings WHERE key = 'frontmatter_lookup_version'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
 
   if (fmLookupVersion !== '1') {
@@ -400,8 +397,7 @@ function runMigrations(db: DB): void {
   // index is rebuilt from the notes table so no vault reindex is needed.
   const ftsVersion = (
     db.prepare("SELECT value FROM settings WHERE key = 'fts_schema_version'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
 
   if (ftsVersion !== '3') {
@@ -502,8 +498,7 @@ function cleanupNfcPaths(db: DB): void {
 function restoreIgnorePatterns(db: DB): void {
   if (!process.env.OBSIDIAN_IGNORE_PATTERNS) {
     const stored = db.prepare("SELECT value FROM settings WHERE key = 'ignore_patterns'").get() as
-      | { value: string }
-      | undefined;
+      { value: string } | undefined;
     if (stored?.value) {
       try {
         const patterns = JSON.parse(stored.value) as string[];
@@ -588,8 +583,7 @@ export function initVecTable(dim: number): void {
   const db = getDb();
 
   const stored = db.prepare("SELECT value FROM settings WHERE key = 'embedding_dim'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   const storedDim = stored ? parseInt(stored.value) : null;
 
   const vecExists = db
@@ -622,8 +616,7 @@ export function initVecTable(dim: number): void {
 export function getStoredEmbeddingDim(): number | null {
   const db = getDb();
   const stored = db.prepare("SELECT value FROM settings WHERE key = 'embedding_dim'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   if (!stored) return null;
   const dim = parseInt(stored.value, 10);
   return dim > 0 ? dim : null;
@@ -658,6 +651,17 @@ export function getChunkEmbeddingsByPath(notePath: string): Float32Array[] {
   );
 }
 
+/** SQLite caps bound parameters per statement; batch path lists well under it. */
+export const PATH_BATCH_SIZE = 500;
+
+function batchPaths(paths: string[]): string[][] {
+  const batches: string[][] = [];
+  for (let i = 0; i < paths.length; i += PATH_BATCH_SIZE) {
+    batches.push(paths.slice(i, i + PATH_BATCH_SIZE));
+  }
+  return batches;
+}
+
 interface NoteMeta {
   mtime: number;
   hash: string;
@@ -676,14 +680,12 @@ interface NoteRow {
 }
 
 export type NotePathResolution =
-  | { type: 'resolved'; path: string }
-  | { type: 'ambiguous'; candidates: string[] };
+  { type: 'resolved'; path: string } | { type: 'ambiguous'; candidates: string[] };
 
 export function getNoteMeta(path: string): NoteMeta | undefined {
   const db = getDb();
   return db.prepare('SELECT mtime, hash FROM notes WHERE path = ?').get(path) as
-    | NoteMeta
-    | undefined;
+    NoteMeta | undefined;
 }
 
 export function getNoteByPath(path: string): NoteRow | undefined {
@@ -738,8 +740,7 @@ export function upsertNote(note: {
   const aliasesJson = aliases.length > 0 ? JSON.stringify(aliases) : null;
 
   const existing = db.prepare('SELECT id FROM notes WHERE path = ?').get(note.path) as
-    | { id: number }
-    | undefined;
+    { id: number } | undefined;
 
   const fmString = note.frontmatter ? yamlStringify(note.frontmatter) : '';
 
@@ -853,8 +854,7 @@ function deleteChildRows(db: DB, noteId: number): void {
 export function deleteNote(notePath: string, keepLinks = false): void {
   const db = getDb();
   const note = db.prepare('SELECT id FROM notes WHERE path = ?').get(notePath) as
-    | { id: number }
-    | undefined;
+    { id: number } | undefined;
   if (!note) return;
 
   deleteChildRows(db, note.id);
@@ -882,8 +882,7 @@ export function deleteNote(notePath: string, keepLinks = false): void {
 export function getDbVersion(): number {
   const db = getDb();
   const row = db.prepare("SELECT value FROM settings WHERE key = 'db_version'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   return row ? parseInt(row.value) : 0;
 }
 
@@ -892,14 +891,6 @@ function bumpDbVersion(): void {
   db.prepare(
     "INSERT OR REPLACE INTO settings(key, value) VALUES('db_version', CAST(COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'db_version'), 0) + 1 AS TEXT))",
   ).run();
-}
-
-export function getOutgoingLinks(notePath: string): string[] {
-  const db = getDb();
-  const rows = db.prepare('SELECT to_path FROM links WHERE from_path = ?').all(notePath) as {
-    to_path: string;
-  }[];
-  return rows.map((r) => r.to_path);
 }
 
 export function getOutgoingLinksForPaths(paths: string[]): Map<string, string[]> {
@@ -1043,7 +1034,6 @@ export function filterNotePathsByTag(paths: string[], tag: string | string[]): S
   const filters = Array.isArray(tag) ? tag : [tag];
   const includes = filters.filter((t) => !t.startsWith('-')).map(normalizeTag);
   const excludes = filters.filter((t) => t.startsWith('-')).map((t) => normalizeTag(t.slice(1)));
-  const pathPlaceholders = paths.map(() => '?').join(', ');
 
   // Multiple include tags = AND logic (note must have ALL specified tags)
   const includeExistsClauses: string[] = [];
@@ -1068,19 +1058,26 @@ export function filterNotePathsByTag(paths: string[], tag: string | string[]): S
   const excludeClause =
     excludeNotExistsClauses.length > 0 ? excludeNotExistsClauses.join(' AND ') : '1';
 
-  const rows = db
-    .prepare(
-      `SELECT n.path
+  // Batched: callers may pass the entire vault (resolveFilteredPaths does), and one
+  // bound parameter per path would blow SQLITE_MAX_VARIABLE_NUMBER on a large vault.
+  const matched = new Set<string>();
+  for (const batch of batchPaths(paths)) {
+    const pathPlaceholders = batch.map(() => '?').join(', ');
+    const rows = db
+      .prepare(
+        `SELECT n.path
        FROM notes n
        WHERE n.path IN (${pathPlaceholders})
          AND ${excludeClause}
          AND ${includeClause}`,
-    )
-    .all(...paths, ...excludeNotExistsParams, ...includeExistsParams) as Array<{
-    path: string;
-  }>;
+      )
+      .all(...batch, ...excludeNotExistsParams, ...includeExistsParams) as Array<{
+      path: string;
+    }>;
+    for (const row of rows) matched.add(row.path);
+  }
 
-  return new Set(rows.map((row) => row.path));
+  return matched;
 }
 
 export function filterNotePathsByFrontmatter(
@@ -1093,7 +1090,6 @@ export function filterNotePathsByFrontmatter(
   const filters = Array.isArray(frontmatter) ? frontmatter : [frontmatter];
   const includes = filters.filter((f) => !f.startsWith('-'));
   const excludes = filters.filter((f) => f.startsWith('-')).map((f) => f.slice(1));
-  const pathPlaceholders = paths.map(() => '?').join(', ');
 
   // Multiple include filters = AND logic (note must have ALL specified field values)
   const includeExistsClauses: string[] = [];
@@ -1131,19 +1127,26 @@ export function filterNotePathsByFrontmatter(
   const excludeClause =
     excludeNotExistsClauses.length > 0 ? excludeNotExistsClauses.join(' AND ') : '1';
 
-  const rows = db
-    .prepare(
-      `SELECT n.path
+  // Batched for the same reason as filterNotePathsByTag: the path set may be the
+  // whole vault, which would otherwise exceed SQLite's bound-parameter limit.
+  const matched = new Set<string>();
+  for (const batch of batchPaths(paths)) {
+    const pathPlaceholders = batch.map(() => '?').join(', ');
+    const rows = db
+      .prepare(
+        `SELECT n.path
        FROM notes n
        WHERE n.path IN (${pathPlaceholders})
          AND ${excludeClause}
          AND ${includeClause}`,
-    )
-    .all(...paths, ...excludeNotExistsParams, ...includeExistsParams) as Array<{
-    path: string;
-  }>;
+      )
+      .all(...batch, ...excludeNotExistsParams, ...includeExistsParams) as Array<{
+      path: string;
+    }>;
+    for (const row of rows) matched.add(row.path);
+  }
 
-  return new Set(rows.map((row) => row.path));
+  return matched;
 }
 
 export function getMatchingNotesByFrontmatter(
@@ -1244,19 +1247,16 @@ export function getStats(): {
   const lastIndexed =
     (
       db.prepare("SELECT value FROM settings WHERE key = 'last_indexed'").get() as
-        | { value: string }
-        | undefined
+        { value: string } | undefined
     )?.value ?? null;
   const embeddingModel =
     (
       db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
-        | { value: string }
-        | undefined
+        { value: string } | undefined
     )?.value ?? null;
   const storedDim = (
     db.prepare("SELECT value FROM settings WHERE key = 'embedding_dim'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
   const embeddingDim = storedDim !== undefined ? parseInt(storedDim, 10) : null;
   const recentActivity = db
@@ -1323,8 +1323,7 @@ export function getPathsToRemoveForIgnoreChange(
     .prepare(`SELECT value FROM settings WHERE key = '${patternsKey}'`)
     .get() as { value: string } | undefined;
   const stored = db.prepare(`SELECT value FROM settings WHERE key = '${signatureKey}'`).get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   const storedSignature = storedPatterns ? stored : undefined;
   const patternsJson = JSON.stringify([...patterns].sort((a, b) => a.localeCompare(b)));
 
@@ -1378,8 +1377,7 @@ export function applyDbConfigDefaults(): void {
   const get = (key: string): string | undefined =>
     (
       db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
-        | { value: string }
-        | undefined
+        { value: string } | undefined
     )?.value;
 
   if (!process.env.OPENAI_BASE_URL) {
@@ -1416,16 +1414,14 @@ export function updateLastIndexed(): void {
 export function getStoredModel(): string | null {
   const db = getDb();
   const row = db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
   return row?.value ?? null;
 }
 
 export function checkModelChanged(model: string): boolean {
   const db = getDb();
   const stored = db.prepare("SELECT value FROM settings WHERE key = 'embedding_model'").get() as
-    | { value: string }
-    | undefined;
+    { value: string } | undefined;
 
   if (stored?.value === model) return false;
 

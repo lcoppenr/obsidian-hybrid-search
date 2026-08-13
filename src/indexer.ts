@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto';
 import { readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { chunkNote } from './chunker.js';
+import {
+  createDocumentTextProjector,
+  embedChunksWithRecovery,
+  type EmbeddedChunk,
+} from './chunk-embedding.js';
+import { chunkNote, createChunkBoundaryIndex, refineChunksToFit } from './chunker.js';
 import { config } from './config.js';
 import {
   deleteNote,
@@ -21,7 +26,7 @@ import {
   upsertNoteUrls,
   wipeDatabaseSidecars,
 } from './db.js';
-import { embed, getContextLength } from './embedder.js';
+import { embedDetailed, getContextLength, getDocumentTokenPolicy } from './embedder.js';
 import { createIgnorePolicy, type IgnorePolicy } from './ignore.js';
 import { extractMarkdownReferences, resolveMarkdownNoteLinks } from './markdown-references.js';
 import { bumpIndexVersion } from './searcher.js';
@@ -214,7 +219,8 @@ export async function indexFile(
     const parsed = matter(raw);
     const { data: frontmatter, content } = parsed;
     const frontmatterRaw: string = parsed.matter;
-    const title = (frontmatter.title as string | undefined) ?? path.basename(fullPath, '.md');
+    const title =
+      frontmatter.title == null ? path.basename(fullPath, '.md') : String(frontmatter.title);
     const frontmatterTags: string[] = Array.isArray(frontmatter.tags)
       ? frontmatter.tags.map(String)
       : typeof frontmatter.tags === 'string'
@@ -225,20 +231,30 @@ export async function indexFile(
     const aliases = parseAliasField(frontmatter.aliases as unknown);
 
     const ctxLen = contextLength ?? (await getContextLength());
-    const chunks = chunkNote(content, ctxLen).filter((c) => c.text.trim().length > 0);
-
-    // Prepend title + heading chain to every chunk so embeddings carry document context.
-    // Heading markers (# / ## / ###) are stripped for readability in the prefix.
-    // Chunks with no headings get just the title. This improves semantic recall for
-    // non-first chunks that would otherwise be context-free.
-    const textsToEmbed = chunks.map((c) => {
-      const cleanChain = c.headingChain.map((h) => h.replace(/^#{1,6}\s+/, ''));
-      const prefix = cleanChain.length > 0 ? `${title} > ${cleanChain.join(' > ')}` : title;
-      return prefix ? `${prefix}\n${c.text}` : c.text;
-    });
+    const semanticChunks = chunkNote(content, ctxLen).filter((c) => c.text.trim().length > 0);
+    let embeddedChunks: EmbeddedChunk[] = [];
     // Notes with no body content (only frontmatter) still get indexed so that
     // tag/frontmatter filters and title search can find them.
-    const embeddings = chunks.length > 0 ? await embed(textsToEmbed, 'document') : [];
+    if (semanticChunks.length > 0) {
+      const tokenPolicy = await getDocumentTokenPolicy();
+      const boundaryIndex = createChunkBoundaryIndex(content);
+      const project = createDocumentTextProjector(title, tokenPolicy);
+      const chunks = refineChunksToFit(
+        content,
+        semanticChunks,
+        tokenPolicy.limit,
+        (body, headingChain) => tokenPolicy.count(project(body, headingChain)),
+        config.chunkOverlap,
+        boundaryIndex,
+      );
+      embeddedChunks = await embedChunksWithRecovery({
+        source: content,
+        chunks,
+        boundaryIndex,
+        project,
+        embed: (texts) => embedDetailed(texts, 'document'),
+      });
+    }
 
     upsertNote({
       path: relPath,
@@ -249,12 +265,12 @@ export async function indexFile(
       frontmatter: frontmatter,
       mtime: stat.mtimeMs,
       hash,
-      chunks: chunks.map((c, i) => ({
-        text: c.text,
-        headingPath: c.headingChain.length > 0 ? c.headingChain.join(' > ') : null,
-        embedding: embeddings[i] ?? null,
-        charStart: c.charStart,
-        charEnd: c.charEnd,
+      chunks: embeddedChunks.map(({ chunk, embedding }) => ({
+        text: chunk.text,
+        headingPath: chunk.headingChain.length > 0 ? chunk.headingChain.join(' > ') : null,
+        embedding,
+        charStart: chunk.charStart,
+        charEnd: chunk.charEnd,
       })),
     });
 
@@ -304,8 +320,7 @@ export async function populateMissingLinks(): Promise<void> {
   const db = getDb();
   const done = (
     db.prepare("SELECT value FROM settings WHERE key = 'links_v1'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
   if (done) return;
 
@@ -333,8 +348,7 @@ export async function populateMissingMarkdownReferences(): Promise<void> {
   const db = getDb();
   const done = (
     db.prepare("SELECT value FROM settings WHERE key = 'markdown_links_v1'").get() as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
   )?.value;
   if (done) return;
 
@@ -696,6 +710,11 @@ export function startWatcher(contextLength: number): void {
           try {
             if (statSync(filePath).isDirectory()) {
               const rel = toVaultRelativePath(filePath);
+              // chokidar v5 consults `ignored` for the watch root itself, where
+              // rel is ''. isIgnored('/') throws → the catch below would fall
+              // through to `return true`, marking the whole tree ignored and
+              // silently disabling all file watching. Never ignore the vault root.
+              if (rel === '') return false;
               return watcherPolicy.isIgnored(rel + '/');
             }
           } catch {
@@ -849,11 +868,27 @@ export function parseInlineTags(content: string): string[] {
 
 export function parseWikilinks(content: string): string[] {
   const seen = new Set<string>();
-  for (const match of content.matchAll(/\[\[([^\]|#]+?)(?:[|#][^\]]*)?\]\]/g)) {
-    const target = match[1]!.trim();
+  let index = 0;
+  while (index < content.length) {
+    const start = content.indexOf('[[', index);
+    if (start === -1) break;
+    const end = content.indexOf(']]', start + 2);
+    if (end === -1) break;
+
+    const inner = content.slice(start + 2, end);
+    const pipeIndex = inner.indexOf('|');
+    const headingIndex = inner.indexOf('#');
+    const targetEnd = minPositiveIndex(pipeIndex, headingIndex, inner.length);
+    const target = inner.slice(0, targetEnd).trim();
     if (target) seen.add(target);
+    index = end + 2;
   }
   return [...seen];
+}
+
+function minPositiveIndex(first: number, second: number, fallback: number): number {
+  const indexes = [first, second].filter((candidate) => candidate >= 0);
+  return indexes.length > 0 ? Math.min(...indexes) : fallback;
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- wikilink resolution requires O(N) alias/title lookups

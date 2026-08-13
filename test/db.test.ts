@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, beforeAll, describe, it, vi } from 'vitest';
 
 // ─── Vault setup (before any imports that read OBSIDIAN_VAULT_PATH) ──────────
 
@@ -59,6 +59,8 @@ const {
   wipeDatabaseSidecars,
   isLikelyDatabaseCorruption,
   closeDb,
+  getChunkEmbeddingsByPath,
+  PATH_BATCH_SIZE,
 } = await import('../src/db.js');
 const { searchBm25, searchFuzzyTitle, search } = await import('../src/searcher.js');
 const { isIgnored } = await import('../src/ignore.js');
@@ -1560,5 +1562,121 @@ describe('initVecTable', () => {
     // Old data should be gone
     const after = db.prepare('SELECT chunk_id FROM vec_chunks LIMIT 1').get();
     assert.equal(after, undefined, 'vec_chunks should be empty after dimension change');
+  });
+});
+
+// ─── path-batched note filters ───────────────────────────────────────────────
+
+// These two take caller-supplied path lists that can run to the whole vault, so an
+// unbatched `IN (?, ?, ...)` would exceed SQLITE_MAX_VARIABLE_NUMBER on a large vault.
+describe('path-batched note filters', () => {
+  beforeAll(() => {
+    wipeDatabaseFiles();
+    openDb();
+    initVecTable(4);
+    upsertNote({
+      path: 'target.md',
+      title: 'Target Note',
+      tags: [],
+      content: 'This is target content about knowledge management.',
+      mtime: Date.now(),
+      hash: 'hash-target',
+      chunks: [
+        {
+          text: 'This is target content about knowledge management.',
+          embedding: new Float32Array([0.1, 0.2, 0.3, 0.4]),
+        },
+      ],
+    });
+  });
+
+  it('filterNotePathsByTag batches without hitting the bind-parameter limit', () => {
+    const many = Array.from({ length: 5000 }, (_, i) => `missing-${i}.md`);
+    many.push('target.md');
+    const expectedBatches = Math.ceil(many.length / PATH_BATCH_SIZE);
+
+    const db = getDb();
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    try {
+      // Exclude-only filter: every existing note matches, so the result isolates
+      // batching behavior rather than tag semantics.
+      const matched = filterNotePathsByTag(many, '-no-such-tag');
+      assert.deepEqual([...matched], ['target.md']);
+      const batchQueryCalls = prepareSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('FROM notes n'),
+      );
+      assert.equal(
+        batchQueryCalls.length,
+        expectedBatches,
+        `expected ${expectedBatches} prepared statements (one per batch of ${PATH_BATCH_SIZE} paths), got ${batchQueryCalls.length}`,
+      );
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+
+  it('filterNotePathsByFrontmatter batches without hitting the bind-parameter limit', () => {
+    const many = Array.from({ length: 5000 }, (_, i) => `missing-${i}.md`);
+    many.push('target.md');
+    const expectedBatches = Math.ceil(many.length / PATH_BATCH_SIZE);
+
+    const db = getDb();
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    try {
+      const matched = filterNotePathsByFrontmatter(many, '-status:archived');
+      assert.deepEqual([...matched], ['target.md']);
+      const batchQueryCalls = prepareSpy.mock.calls.filter((call) =>
+        String(call[0]).includes('FROM notes n'),
+      );
+      assert.equal(
+        batchQueryCalls.length,
+        expectedBatches,
+        `expected ${expectedBatches} prepared statements (one per batch of ${PATH_BATCH_SIZE} paths), got ${batchQueryCalls.length}`,
+      );
+    } finally {
+      prepareSpy.mockRestore();
+    }
+  });
+});
+
+// ─── hasVecTable() guard ─────────────────────────────────────────────────────
+
+// A DB opened but never initVecTable()'d has no `vec_chunks` — the state a vault
+// indexed with embeddings disabled (or a run before the first index) is left in.
+// getChunkEmbeddingsByPath must degrade to an empty answer there instead of throwing
+// "no such table", because the similarity path calls it unconditionally.
+// Runs last: it deliberately leaves the singleton DB without a vec table.
+describe('hasVecTable guard', () => {
+  beforeAll(() => {
+    wipeDatabaseFiles();
+    openDb(); // deliberately NO initVecTable()
+    // Raw INSERT, not upsertNote(): insertChunks() prepares an INSERT against
+    // vec_chunks unconditionally and would throw before the guards are reached.
+    // A real row matters — it makes an empty answer prove the guard fired rather
+    // than merely that no note matched.
+    getDb()
+      .prepare(
+        'INSERT INTO notes (path, title, tags, content, frontmatter, mtime, hash) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        'vecless.md',
+        'Vecless Note',
+        '[]',
+        'Indexed without a vector table.',
+        '',
+        1,
+        'h-vecless',
+      );
+  });
+
+  it('has no vec_chunks table in this state', () => {
+    const probe = getDb()
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'")
+      .get();
+    assert.equal(probe, undefined, 'precondition: the vector table must be absent');
+  });
+
+  it('getChunkEmbeddingsByPath returns [] instead of throwing', () => {
+    assert.deepEqual(getChunkEmbeddingsByPath('vecless.md'), []);
   });
 });
