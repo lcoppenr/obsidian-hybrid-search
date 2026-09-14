@@ -23,6 +23,7 @@ import {
   checkModelChanged,
   getFailedChunks,
   getDb,
+  getNotesWithFailedChunks,
   getStats,
   getStoredEmbeddingDim,
   getStoredModel,
@@ -33,11 +34,17 @@ import {
   wipeDatabaseFiles,
   wipeDatabaseSidecars,
 } from './db.js';
-import { getContextLength, getEmbeddingDim, primeEmbeddingDim } from './embedder.js';
 import {
-  getIndexingStatus,
+  activeModelName,
+  getContextLength,
+  getEmbeddingDim,
+  primeEmbeddingDim,
+} from './embedder.js';
+import {
+  formatDuration,
   indexFileWithRecovery,
   indexVaultSync,
+  renderProgressLine,
   populateMissingMarkdownReferences,
   startBackgroundIndexing,
   startWatcher,
@@ -46,13 +53,30 @@ import { runHttpMcpServerCli } from './mcp-http-server.js';
 import { runStdioMcpServer } from './mcp-stdio-server.js';
 import { ensureMcpServer, formatMcpInfo, getMcpStatus, stopMcpServer } from './mcp-supervisor.js';
 import { isAmbiguousNotePathError, readNotes, search } from './searcher.js';
+import { buildStatusPayload } from './status-payload.js';
 import { handleStdioLine } from './stdio-server.js';
 
 const execAsync = promisify(exec);
 
-const { version } = JSON.parse(
-  readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf-8'),
-) as { version: string };
+/**
+ * Read the package version from the nearest package.json above this module.
+ * The depth differs between the compiled layout (dist/src/) and running the
+ * sources directly (src/), so the file is located rather than assumed.
+ */
+function readPackageVersion(): string {
+  let dir = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    const candidate = path.join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      return (JSON.parse(readFileSync(candidate, 'utf-8')) as { version: string }).version;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error('Could not locate package.json for the CLI version');
+    dir = parent;
+  }
+}
+
+const version = readPackageVersion();
 
 function failCliValidation(err: unknown): never {
   console.error('Error:', err instanceof Error ? err.message : String(err));
@@ -150,6 +174,72 @@ interface SearchOpts {
 
 interface ReindexOpts {
   force?: boolean;
+  errors?: boolean;
+}
+
+/**
+ * Re-embeds only the notes that hold rejected chunks. A chunk keeps its `failed`
+ * status until the note itself changes, so after a provider outage or a bad key
+ * the gaps would otherwise stay in the index indefinitely.
+ */
+async function reindexFailedNotes(): Promise<void> {
+  const contextLength = await init({ allowWipe: false });
+  const paths = getNotesWithFailedChunks();
+
+  if (paths.length === 0) {
+    process.stderr.write('Nothing to repair — no chunks are marked as failed.\n');
+    return;
+  }
+
+  const noun = paths.length === 1 ? 'note' : 'notes';
+  process.stderr.write(`Repairing ${String(paths.length)} ${noun} with failed chunks...\n`);
+
+  const modelName = currentModelName();
+  const embeddingDim = getStoredEmbeddingDim();
+  const isTTY = process.stderr.isTTY === true;
+  const startTime = Date.now();
+  const failures: Array<{ path: string; error: string }> = [];
+
+  for (const [index, relPath] of paths.entries()) {
+    const status = await indexFileWithRecovery(
+      path.join(config.vaultPath, relPath),
+      contextLength,
+      // Forced: the note is unchanged on disk, which is exactly why it was skipped.
+      true,
+      () => recoverDbSidecarsForReindex(modelName, embeddingDim),
+    );
+    if (typeof status === 'object') {
+      failures.push({ path: relPath, error: status.error });
+    }
+
+    const processed = index + 1;
+    if (isTTY) {
+      process.stderr.write(`\r\x1b[2K${renderProgressLine(processed, paths.length, '')}`);
+    } else {
+      const pct = Math.round((processed / paths.length) * 100);
+      process.stderr.write(`${String(processed)}/${String(paths.length)} (${String(pct)}%)\n`);
+    }
+  }
+  if (isTTY) process.stderr.write('\n');
+
+  const remaining = getNotesWithFailedChunks();
+  const repaired = paths.length - remaining.length;
+  const elapsed = formatDuration((Date.now() - startTime) / 1000);
+  const summary = [`${String(repaired)} repaired`, `${String(remaining.length)} still failing`];
+  if (failures.length > 0) {
+    summary.push(`${String(failures.length)} error${failures.length > 1 ? 's' : ''}`);
+  }
+  process.stderr.write(`Done in ${elapsed} — ${summary.join(', ')}\n`);
+
+  for (const failure of failures) {
+    process.stderr.write(`  ${failure.path}: ${failure.error}\n`);
+  }
+  // A note can index cleanly and still hold a rejected chunk, so the two lists differ.
+  for (const relPath of remaining) {
+    if (!failures.some((failure) => failure.path === relPath)) {
+      process.stderr.write(`  ${relPath}: still rejected by the embedding provider\n`);
+    }
+  }
 }
 
 interface ServeOpts {
@@ -316,9 +406,7 @@ async function init({ allowWipe = false }: { allowWipe?: boolean } = {}) {
 }
 
 function currentModelName(): string {
-  return config.apiKey || process.env.OPENAI_BASE_URL
-    ? config.apiModel
-    : `local:${config.localModel}`;
+  return activeModelName();
 }
 
 function restoreDbRuntimeMetadata(modelName: string, embeddingDim: number | null): void {
@@ -460,8 +548,19 @@ async function fetchUpdateStatus(): Promise<
   }
 }
 
+/**
+ * Name the CLI was invoked as, so help and usage match the binary the user typed.
+ * Falls back to the canonical name for anything else (`tsx src/cli.ts`, custom symlinks).
+ */
+function invokedName(): string {
+  const entry = process.argv[1];
+  if (!entry) return 'obsidian-hybrid-search';
+  const base = path.basename(entry).replace(/\.[cm]?[jt]s$/, '');
+  return base === 'ohs' ? 'ohs' : 'obsidian-hybrid-search';
+}
+
 const program = new Command()
-  .name('obsidian-hybrid-search')
+  .name(invokedName())
   .description('Hybrid search for your Obsidian vault')
   .version(version)
   .option(
@@ -674,7 +773,16 @@ program
   .command('reindex [path]')
   .description('Reindex the vault or a specific file')
   .option('--force', 'Force reindex even if unchanged')
+  .option('--errors', 'Reindex only the notes whose chunks failed to embed')
   .action(async (filePath: string | undefined, opts: ReindexOpts) => {
+    if (opts.errors) {
+      if (filePath) {
+        failCliValidation(new Error('--errors reindexes the failed notes, so it takes no path'));
+      }
+      await reindexFailedNotes();
+      return;
+    }
+
     // On a fresh install (no DB yet), always do a full reindex
     if (!filePath && !existsSync(config.dbPath)) {
       opts.force = true;
@@ -740,23 +848,9 @@ program
   .option('--errors', 'Include list of chunks that failed to embed')
   .action(async (opts: { recent?: boolean; errors?: boolean }) => {
     const [contextLength, updateInfo] = await Promise.all([init(), fetchUpdateStatus()]);
-    const stats = getStats();
-    const indexingStatus = getIndexingStatus();
     const output: Record<string, unknown> = {
       vault: config.vaultPath,
-      total: stats.total,
-      indexed: stats.indexed,
-      pending: indexingStatus.queued,
-      chunks: stats.chunks,
-      links: stats.links,
-      last_indexed: stats.lastIndexed,
-      db_size_mb:
-        stats.dbSizeBytes !== null ? Math.round((stats.dbSizeBytes / 1024 / 1024) * 10) / 10 : null,
-      api_base_url: config.apiBaseUrl,
-      model: stats.embeddingModel,
-      embedding_dim: stats.embeddingDim,
-      context_length: contextLength,
-      version,
+      ...buildStatusPayload({ contextLength, version }),
       ...(updateInfo.state === 'update_available'
         ? {
             latest_version: updateInfo.latestVersion,
@@ -765,20 +859,18 @@ program
         : updateInfo.state === 'offline'
           ? { version_check: 'offline' }
           : {}),
-      ignore_patterns: config.ignorePatterns,
-      respect_gitignore: config.respectGitignore,
-      include_patterns: config.includePatterns,
     };
     if (opts.recent) {
-      output.recent_activity = stats.recentActivity;
+      output.recent_activity = getStats().recentActivity;
     }
     if (opts.errors) {
       output.errors = getFailedChunks();
     }
     console.log(JSON.stringify(output, null, 2));
-    if (!opts.errors && stats.failedChunks > 0) {
+    const failedChunks = Number(output.failed_chunks ?? 0);
+    if (!opts.errors && failedChunks > 0) {
       console.warn(
-        `⚠️  ${stats.failedChunks} chunk(s) have no embeddings (text search still works). Use --errors to see details.`,
+        `⚠️  ${failedChunks} chunk(s) have no embeddings (text search still works). Use --errors to see details.`,
       );
     }
   });
@@ -929,7 +1021,12 @@ const serveCommand = program
         // search (e.g. embedding API call) does not block reading and starting the next
         // one.  Responses carry their own `id` field so the plugin dispatches them
         // correctly regardless of arrival order.
-        void handleStdioLine(line, search, (s) => process.stdout.write(s + '\n'));
+        void handleStdioLine(
+          line,
+          search,
+          (s) => process.stdout.write(s + '\n'),
+          () => buildStatusPayload({ contextLength, version }),
+        );
       }
       return;
     }
