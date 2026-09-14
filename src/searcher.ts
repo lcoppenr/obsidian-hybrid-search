@@ -1484,16 +1484,26 @@ export async function search(input: string, options: SearchOptions = {}): Promis
         snippet: '',
         score: 1.0,
         scores: { hybrid: 1.0 },
+        line_count: m.line_count,
+        byte_size: m.byte_size,
+        word_count: m.word_count,
+        mtime: m.mtime,
       }));
     } else {
       const db = getDb();
       const rows = db
-        .prepare('SELECT path, title, tags, aliases FROM notes ORDER BY title ASC LIMIT ?')
+        .prepare(
+          'SELECT path, title, tags, aliases, line_count, byte_size, word_count, mtime FROM notes ORDER BY title ASC LIMIT ?',
+        )
         .all(FETCH_ALL) as Array<{
         path: string;
         title: string;
         tags: string;
         aliases: string | null;
+        line_count: number | null;
+        byte_size: number | null;
+        word_count: number | null;
+        mtime: number | null;
       }>;
       fmResults = rows.map((m) => ({
         path: m.path,
@@ -1503,6 +1513,10 @@ export async function search(input: string, options: SearchOptions = {}): Promis
         snippet: '',
         score: 1.0,
         scores: { hybrid: 1.0 },
+        line_count: m.line_count,
+        byte_size: m.byte_size,
+        word_count: m.word_count,
+        mtime: m.mtime,
       }));
     }
 

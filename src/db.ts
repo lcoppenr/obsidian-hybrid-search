@@ -1177,7 +1177,16 @@ export function filterNotePathsByFrontmatter(
 export function getMatchingNotesByFrontmatter(
   frontmatter: string | string[],
   limit: number,
-): Array<{ path: string; title: string; tags: string; aliases: string | null }> {
+): Array<{
+  path: string;
+  title: string;
+  tags: string;
+  aliases: string | null;
+  line_count: number | null;
+  byte_size: number | null;
+  word_count: number | null;
+  mtime: number | null;
+}> {
   const db = getDb();
   const filters = Array.isArray(frontmatter) ? frontmatter : [frontmatter];
   const includes = filters.filter((f) => !f.startsWith('-'));
@@ -1221,7 +1230,7 @@ export function getMatchingNotesByFrontmatter(
 
   const rows = db
     .prepare(
-      `SELECT n.path, n.title, n.tags, n.aliases
+      `SELECT n.path, n.title, n.tags, n.aliases, n.line_count, n.byte_size, n.word_count, n.mtime
        FROM notes n
        WHERE ${excludeClause}
          AND ${includeClause}
@@ -1233,6 +1242,10 @@ export function getMatchingNotesByFrontmatter(
     title: string;
     tags: string;
     aliases: string | null;
+    line_count: number | null;
+    byte_size: number | null;
+    word_count: number | null;
+    mtime: number | null;
   }>;
 
   return rows;
