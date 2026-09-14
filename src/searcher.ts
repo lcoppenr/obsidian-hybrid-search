@@ -38,6 +38,10 @@ export interface NoteReadResult {
   markdownLinks: string[];
   markdownBacklinks: string[];
   urls: string[];
+  lineCount: number;
+  byteSize: number;
+  wordCount: number;
+  mtime: number;
 }
 
 export interface NoteReadMiss {
@@ -93,6 +97,10 @@ export interface SearchResult {
   };
   previewAnchors?: MatchAnchor[];
   primaryAnchorIndex?: number;
+  lineCount: number;
+  byteSize: number;
+  wordCount: number;
+  mtime: number;
 }
 
 export interface SearchOptions {
@@ -138,6 +146,10 @@ interface RawResult {
   };
   semanticAnchor?: MatchAnchor;
   bm25Anchor?: MatchAnchor;
+  line_count?: number | null;
+  byte_size?: number | null;
+  word_count?: number | null;
+  mtime?: number | null;
 }
 
 export function matchesScopeFilter(notePath: string, scope: string | string[]): boolean {
@@ -183,7 +195,14 @@ function toSearchResult(r: RawResult): SearchResult {
   if (r.scores.semantic != null) matchedBy.push('semantic');
   if (r.scores.bm25 != null) matchedBy.push('bm25');
   if (r.scores.fuzzy_title != null) matchedBy.push('title');
-  const { chunkText: _chunkText, ...rest } = r;
+  const {
+    chunkText: _chunkText,
+    line_count: _lc,
+    byte_size: _bs,
+    word_count: _wc,
+    mtime: _mt,
+    ...rest
+  } = r;
   return {
     ...rest,
     tags,
@@ -200,6 +219,10 @@ function toSearchResult(r: RawResult): SearchResult {
       fuzzy_title: r.scores.fuzzy_title ?? null,
       hybrid: r.scores.hybrid ?? null,
     },
+    lineCount: r.line_count ?? 0,
+    byteSize: r.byte_size ?? 0,
+    wordCount: r.word_count ?? 0,
+    mtime: r.mtime ?? 0,
   };
 }
 
@@ -243,6 +266,10 @@ type FtsRow = {
   aliases: string | null;
   snippet: string;
   rank: number;
+  line_count: number | null;
+  byte_size: number | null;
+  word_count: number | null;
+  mtime: number | null;
 };
 
 // Sentinel markers bracketing the actual FTS match inside snippet() output. A snippet
@@ -286,6 +313,7 @@ export function searchBm25(
   const stmt = db.prepare<Array<string | number>, FtsRow>(
     `
       SELECT n.path, n.title, n.tags, n.aliases,
+             n.line_count, n.byte_size, n.word_count, n.mtime,
              snippet(notes_fts_bm25, 2, ?, ?, '...', ?) AS snippet,
              bm25(notes_fts_bm25, 10.0, 5.0, 1.0) AS rank
       FROM notes_fts_bm25
@@ -321,6 +349,10 @@ export function searchBm25(
       scores: {
         bm25: Math.max(0, Math.abs(row.rank) / (1 + Math.abs(row.rank))),
       },
+      line_count: row.line_count,
+      byte_size: row.byte_size,
+      word_count: row.word_count,
+      mtime: row.mtime,
     }));
     // Enrich BM25 snippets with heading breadcrumb and/or build anchor data.
     // Skip when neither is needed (snippetLength=0 and buildAnchors=false).
@@ -409,7 +441,8 @@ function searchByAliasExact(
   const rows = db
     .prepare(
       `
-      SELECT DISTINCT n.path, n.title, n.tags, n.aliases
+      SELECT DISTINCT n.path, n.title, n.tags, n.aliases,
+             n.line_count, n.byte_size, n.word_count, n.mtime
       FROM note_aliases a
       JOIN notes n ON n.id = a.note_id
       WHERE a.alias_norm = ?${filter.clause}
@@ -421,6 +454,10 @@ function searchByAliasExact(
     title: string;
     tags: string;
     aliases: string | null;
+    line_count: number | null;
+    byte_size: number | null;
+    word_count: number | null;
+    mtime: number | null;
   }>;
 
   return rows.map((row) => ({
@@ -431,6 +468,10 @@ function searchByAliasExact(
     snippet: '',
     score: 1.0,
     scores: { fuzzy_title: 1.0 },
+    line_count: row.line_count,
+    byte_size: row.byte_size,
+    word_count: row.word_count,
+    mtime: row.mtime,
   }));
 }
 
@@ -459,6 +500,7 @@ export function searchFuzzyTitle(
       .prepare(
         `
       SELECT n.path, n.title, n.tags, n.aliases,
+             n.line_count, n.byte_size, n.word_count, n.mtime,
              bm25(notes_fts_fuzzy) AS rank
       FROM notes_fts_fuzzy
       JOIN notes n ON n.id = notes_fts_fuzzy.rowid
@@ -472,6 +514,10 @@ export function searchFuzzyTitle(
       title: string;
       tags: string;
       aliases: string | null;
+      line_count: number | null;
+      byte_size: number | null;
+      word_count: number | null;
+      mtime: number | null;
       rank: number;
     }>;
 
@@ -497,6 +543,10 @@ export function searchFuzzyTitle(
           scores: {
             fuzzy_title: adjustedScore,
           },
+          line_count: row.line_count,
+          byte_size: row.byte_size,
+          word_count: row.word_count,
+          mtime: row.mtime,
         };
       })
       .filter((r) => r.score > 0 && !aliasExactPaths.has(r.path));
@@ -826,6 +876,7 @@ function searchVector(
                c.note_id, c.chunk_index, c.text AS chunk_text, c.heading_path,
                c.char_start, c.char_end,
                n.path, n.title, n.tags, n.aliases,
+               n.line_count, n.byte_size, n.word_count, n.mtime,
                ROW_NUMBER() OVER (PARTITION BY c.note_id ORDER BY vc.distance, c.chunk_index) AS row_num
         FROM vec_chunks AS vc
         JOIN chunks c ON c.id = vc.chunk_id
@@ -834,7 +885,8 @@ function searchVector(
           AND k = ?${restrictionSql}
       )
       SELECT chunk_id, distance, note_id, chunk_index, chunk_text, heading_path,
-             char_start, char_end, path, title, tags, aliases
+             char_start, char_end, path, title, tags, aliases,
+             line_count, byte_size, word_count, mtime
       FROM ranked
       WHERE row_num = 1
       ORDER BY distance, chunk_index
@@ -856,6 +908,10 @@ function searchVector(
         title: string;
         tags: string;
         aliases: string | null;
+        line_count: number | null;
+        byte_size: number | null;
+        word_count: number | null;
+        mtime: number | null;
       }>;
 
       return rows.map((row) => {
@@ -877,6 +933,10 @@ function searchVector(
             charStart: row.char_start ?? null,
             charEnd: row.char_end ?? null,
           },
+          line_count: row.line_count,
+          byte_size: row.byte_size,
+          word_count: row.word_count,
+          mtime: row.mtime,
         };
       });
     } catch (error) {
@@ -1069,9 +1129,10 @@ function searchRelated(
 
   const makeResult = (notePth: string, depth: number, snippet: string): SearchResult | null => {
     const note = db
-      .prepare('SELECT path, title, tags, aliases FROM notes WHERE path = ?')
+      .prepare('SELECT path, title, tags, aliases, line_count, byte_size, word_count, mtime FROM notes WHERE path = ?')
       .get(notePth) as
-      { path: string; title: string; tags: string; aliases: string | null } | undefined;
+      | { path: string; title: string; tags: string; aliases: string | null; line_count: number | null; byte_size: number | null; word_count: number | null; mtime: number | null }
+      | undefined;
     if (!note) return null;
     let tags: string[];
     try {
@@ -1094,6 +1155,10 @@ function searchRelated(
       markdownBacklinks: [],
       urls: [],
       scores: { semantic: null, bm25: null, fuzzy_title: null, hybrid: null },
+      lineCount: note.line_count ?? 0,
+      byteSize: note.byte_size ?? 0,
+      wordCount: note.word_count ?? 0,
+      mtime: note.mtime ?? 0,
     };
   };
 
@@ -1907,6 +1972,10 @@ export function readNotes(
       markdownLinks,
       markdownBacklinks,
       urls,
+      lineCount: note.line_count ?? 0,
+      byteSize: note.byte_size ?? 0,
+      wordCount: note.word_count ?? 0,
+      mtime: note.mtime ?? 0,
     });
   }
 

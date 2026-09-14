@@ -253,6 +253,166 @@ function validationErrorResult(text: string): McpToolResult {
   };
 }
 
+const LIST_COLUMN_MAP: Record<string, string> = {
+  lineCount: 'line_count',
+  byteSize: 'byte_size',
+  wordCount: 'word_count',
+  mtime: 'mtime',
+  title: 'title',
+  path: 'path',
+};
+const LIST_NUMERIC_COLUMNS = new Set(['line_count', 'byte_size', 'word_count', 'mtime']);
+
+function callListTool(a: Record<string, unknown>): McpToolResult {
+  const sortByParam = (a.sort_by as string | undefined) ?? 'title';
+  const dbColumn = LIST_COLUMN_MAP[sortByParam];
+  if (!dbColumn) {
+    return validationErrorResult(
+      `Invalid sort_by: ${sortByParam}. Use one of: ${Object.keys(LIST_COLUMN_MAP).join(', ')}`,
+    );
+  }
+  const isNumeric = LIST_NUMERIC_COLUMNS.has(dbColumn);
+  const orderParam = (a.order as string | undefined) ?? (isNumeric ? 'desc' : 'asc');
+  const orderDir = orderParam === 'asc' ? 'ASC' : 'DESC';
+  const limitParam = Math.min(Math.max((a.limit as number | undefined) ?? 20, 1), 100);
+  const thresholdParam = a.threshold as number | undefined;
+
+  const scopeRaw = parseStringArrayParam('scope', a.scope);
+  const scopeArr = scopeRaw === undefined ? [] : Array.isArray(scopeRaw) ? scopeRaw : [scopeRaw];
+
+  const conditions: string[] = [];
+  const params: Array<string | number> = [];
+  for (const sc of scopeArr) {
+    if (sc.startsWith('-')) {
+      conditions.push('path NOT LIKE ?');
+      params.push(sc.slice(1) + '%');
+    } else {
+      conditions.push('path LIKE ?');
+      params.push(sc + '%');
+    }
+  }
+  if (thresholdParam !== undefined && isNumeric) {
+    conditions.push(`${dbColumn} >= ?`);
+    params.push(thresholdParam);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  // dbColumn and orderDir come from fixed allow-lists above, never from raw input.
+  const sql = `SELECT path, title, tags, aliases, line_count, byte_size, word_count, mtime FROM notes ${whereClause} ORDER BY ${dbColumn} ${orderDir} LIMIT ?`;
+  params.push(limitParam);
+
+  const rows = getDb()
+    .prepare(sql)
+    .all(...params) as Array<{
+    path: string;
+    title: string;
+    tags: string;
+    aliases: string | null;
+    line_count: number | null;
+    byte_size: number | null;
+    word_count: number | null;
+    mtime: number | null;
+  }>;
+
+  const parseJsonArray = (raw: string | null): string[] => {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as string[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const results = rows.map((r) => ({
+    path: r.path,
+    title: r.title,
+    tags: parseJsonArray(r.tags),
+    aliases: parseJsonArray(r.aliases),
+    lineCount: r.line_count ?? 0,
+    byteSize: r.byte_size ?? 0,
+    wordCount: r.word_count ?? 0,
+    mtime: r.mtime ?? 0,
+  }));
+
+  return textResult(JSON.stringify({ results, total: results.length }, null, 2));
+}
+
+function callStatsTool(): McpToolResult {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `
+      SELECT
+        COUNT(*) as total_notes,
+        SUM(line_count) as total_lines,
+        SUM(byte_size) as total_bytes,
+        SUM(word_count) as total_words,
+        ROUND(AVG(line_count), 1) as avg_lines,
+        ROUND(AVG(byte_size), 1) as avg_bytes,
+        ROUND(AVG(word_count), 1) as avg_words,
+        MAX(line_count) as max_lines,
+        MAX(byte_size) as max_bytes,
+        MAX(word_count) as max_words,
+        MIN(line_count) as min_lines,
+        MIN(byte_size) as min_bytes,
+        MIN(word_count) as min_words,
+        MAX(mtime) as newest_mtime,
+        MIN(mtime) as oldest_mtime
+      FROM notes
+      WHERE line_count IS NOT NULL
+    `,
+    )
+    .get() as Record<string, number>;
+
+  const largestByWords = db
+    .prepare(
+      'SELECT path, word_count FROM notes WHERE word_count IS NOT NULL ORDER BY word_count DESC LIMIT 1',
+    )
+    .get() as { path: string; word_count: number } | undefined;
+  const largestByBytes = db
+    .prepare(
+      'SELECT path, byte_size FROM notes WHERE byte_size IS NOT NULL ORDER BY byte_size DESC LIMIT 1',
+    )
+    .get() as { path: string; byte_size: number } | undefined;
+  const largestByLines = db
+    .prepare(
+      'SELECT path, line_count FROM notes WHERE line_count IS NOT NULL ORDER BY line_count DESC LIMIT 1',
+    )
+    .get() as { path: string; line_count: number } | undefined;
+
+  const totalNotes = row.total_notes ?? 0;
+  const medianRow = db
+    .prepare(
+      'SELECT word_count FROM notes WHERE word_count IS NOT NULL ORDER BY word_count ASC LIMIT 1 OFFSET ?',
+    )
+    .get(Math.floor(totalNotes / 2)) as { word_count: number } | undefined;
+
+  const output = {
+    totalNotes: row.total_notes,
+    totals: { lines: row.total_lines, bytes: row.total_bytes, words: row.total_words },
+    averages: { lines: row.avg_lines, bytes: row.avg_bytes, words: row.avg_words },
+    maximums: { lines: row.max_lines, bytes: row.max_bytes, words: row.max_words },
+    minimums: { lines: row.min_lines, bytes: row.min_bytes, words: row.min_words },
+    medianWordCount: medianRow?.word_count ?? 0,
+    largest: {
+      byWords: largestByWords
+        ? { path: largestByWords.path, wordCount: largestByWords.word_count }
+        : null,
+      byBytes: largestByBytes
+        ? { path: largestByBytes.path, byteSize: largestByBytes.byte_size }
+        : null,
+      byLines: largestByLines
+        ? { path: largestByLines.path, lineCount: largestByLines.line_count }
+        : null,
+    },
+    newestMtime: row.newest_mtime,
+    oldestMtime: row.oldest_mtime,
+  };
+
+  return textResult(JSON.stringify(output, null, 2));
+}
+
 async function callSearchTool(a: Record<string, unknown>): Promise<McpToolResult> {
   const parsed = SearchToolArgumentsSchema.safeParse(a);
   if (!parsed.success) {
@@ -603,6 +763,56 @@ export function createMcpServer(runtime: McpRuntime): Server {
           },
         },
       },
+      {
+        name: toolName('list'),
+        description:
+          'List vault notes sorted by any metadata column — no search query needed. ' +
+          'Use for vault inventory, finding largest/oldest/newest files, identifying split candidates, ' +
+          'or any task where you need notes ranked by size or recency rather than relevance. ' +
+          'Returns: path, title, tags[], aliases[], lineCount, byteSize, wordCount, mtime (unix epoch).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            sort_by: {
+              type: 'string',
+              enum: ['lineCount', 'byteSize', 'wordCount', 'mtime', 'title', 'path'],
+              description:
+                'Column to sort by (default: title). lineCount/byteSize/wordCount/mtime for size or recency; title/path for alphabetical.',
+            },
+            order: {
+              type: 'string',
+              enum: ['asc', 'desc'],
+              description: 'Sort order (default: desc for numeric columns, asc for title/path).',
+            },
+            limit: {
+              type: 'number',
+              description: 'Maximum results to return (default: 20, max: 100).',
+            },
+            scope: {
+              description:
+                'Limit to subfolder(s). String or array. Prefix with "-" to exclude, e.g. ["-_Archive/"].',
+              oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }],
+            },
+            threshold: {
+              type: 'number',
+              description:
+                'Minimum value filter for the sort_by column (numeric columns only). ' +
+                'E.g. sort_by: "wordCount", threshold: 3000 returns only notes with 3000+ words.',
+            },
+          },
+        },
+      },
+      {
+        name: toolName('stats'),
+        description:
+          'Vault-wide metadata summary — total notes, aggregate and average line/byte/word counts, ' +
+          'largest and smallest files, median sizes. Use for vault health checks, planning maintenance, ' +
+          'or getting a quick overview without running multiple searches.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
     ],
   }));
 
@@ -625,6 +835,14 @@ export function createMcpServer(runtime: McpRuntime): Server {
 
       if (isTool(name, 'read')) {
         return callReadTool(a);
+      }
+
+      if (isTool(name, 'list')) {
+        return callListTool(a);
+      }
+
+      if (isTool(name, 'stats')) {
+        return callStatsTool();
       }
 
       return validationErrorResult(`Unknown tool: ${name}`);

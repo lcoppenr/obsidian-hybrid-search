@@ -225,13 +225,16 @@ function runMigrations(db: DB): void {
   // Base schema — no FTS tables here; they are managed by the versioned migration below
   db.exec(`
     CREATE TABLE IF NOT EXISTS notes (
-      id      INTEGER PRIMARY KEY,
-      path    TEXT UNIQUE NOT NULL,
-      title   TEXT,
-      tags    TEXT,
-      content TEXT,
-      mtime   REAL,
-      hash    TEXT
+      id         INTEGER PRIMARY KEY,
+      path       TEXT UNIQUE NOT NULL,
+      title      TEXT,
+      tags       TEXT,
+      content    TEXT,
+      mtime      REAL,
+      hash       TEXT,
+      line_count INTEGER,
+      byte_size  INTEGER,
+      word_count INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS chunks (
@@ -298,6 +301,15 @@ function runMigrations(db: DB): void {
   }
   if (!cols.some((c) => c.name === 'frontmatter')) {
     db.exec("ALTER TABLE notes ADD COLUMN frontmatter TEXT NOT NULL DEFAULT ''");
+  }
+  if (!cols.some((c) => c.name === 'line_count')) {
+    db.exec('ALTER TABLE notes ADD COLUMN line_count INTEGER');
+  }
+  if (!cols.some((c) => c.name === 'byte_size')) {
+    db.exec('ALTER TABLE notes ADD COLUMN byte_size INTEGER');
+  }
+  if (!cols.some((c) => c.name === 'word_count')) {
+    db.exec('ALTER TABLE notes ADD COLUMN word_count INTEGER');
   }
 
   const chunkCols = db.prepare('PRAGMA table_info(chunks)').all() as { name: string }[];
@@ -677,6 +689,9 @@ interface NoteRow {
   frontmatter: string;
   mtime: number;
   hash: string;
+  line_count: number | null;
+  byte_size: number | null;
+  word_count: number | null;
 }
 
 export type NotePathResolution =
@@ -743,6 +758,9 @@ export function upsertNote(note: {
     { id: number } | undefined;
 
   const fmString = note.frontmatter ? yamlStringify(note.frontmatter) : '';
+  const lineCount = note.content.split('\n').length;
+  const byteSize = Buffer.byteLength(note.content, 'utf8');
+  const wordCount = note.content.split(/\s+/).filter(Boolean).length;
 
   if (existing) {
     // Delete existing chunk vectors before cascade-deleting chunks
@@ -750,7 +768,8 @@ export function upsertNote(note: {
 
     db.prepare(
       `
-      UPDATE notes SET title = ?, tags = ?, aliases = ?, content = ?, frontmatter = ?, mtime = ?, hash = ?
+      UPDATE notes SET title = ?, tags = ?, aliases = ?, content = ?, frontmatter = ?, mtime = ?, hash = ?,
+        line_count = ?, byte_size = ?, word_count = ?
       WHERE path = ?
     `,
     ).run(
@@ -761,6 +780,9 @@ export function upsertNote(note: {
       fmString,
       note.mtime,
       note.hash,
+      lineCount,
+      byteSize,
+      wordCount,
       note.path,
     );
 
@@ -777,8 +799,8 @@ export function upsertNote(note: {
     const result = db
       .prepare(
         `
-      INSERT INTO notes (path, title, tags, aliases, content, frontmatter, mtime, hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO notes (path, title, tags, aliases, content, frontmatter, mtime, hash, line_count, byte_size, word_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
       )
       .run(
@@ -790,6 +812,9 @@ export function upsertNote(note: {
         fmString,
         note.mtime,
         note.hash,
+        lineCount,
+        byteSize,
+        wordCount,
       );
 
     const noteId = result.lastInsertRowid as number;

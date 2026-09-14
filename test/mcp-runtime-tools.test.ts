@@ -149,7 +149,7 @@ describe('createMcpServer — tool dispatch', () => {
     return handler as (req: unknown, extra: unknown) => Promise<unknown>;
   }
 
-  it('registers a tools/list handler that returns 4 tools', async () => {
+  it('registers a tools/list handler that returns 6 tools', async () => {
     const runtime = await createMcpRuntime();
     const server = createMcpServer(runtime);
     const listHandler = getHandler(server, 'tools/list');
@@ -157,9 +157,9 @@ describe('createMcpServer — tool dispatch', () => {
       tools: { name: string; description: string; inputSchema: unknown }[];
     };
     assert.ok(Array.isArray(result.tools));
-    assert.equal(result.tools.length, 4);
+    assert.equal(result.tools.length, 6);
     const names = result.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
-    assert.deepEqual(names, ['read', 'reindex', 'search', 'status']);
+    assert.deepEqual(names, ['list', 'read', 'reindex', 'search', 'stats', 'status']);
     for (const tool of result.tools) {
       assert.ok(typeof tool.description === 'string' && tool.description.length > 0);
       assert.ok(tool.inputSchema && typeof tool.inputSchema === 'object');
@@ -255,7 +255,7 @@ describe('createMcpServer — tool dispatch', () => {
         tools: { name: string }[];
       };
       const names = result.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
-      assert.deepEqual(names, ['work_read', 'work_reindex', 'work_search', 'work_status']);
+      assert.deepEqual(names, ['work_list', 'work_read', 'work_reindex', 'work_search', 'work_stats', 'work_status']);
     } finally {
       process.env.OBSIDIAN_PREFIX = prevPrefix;
     }
