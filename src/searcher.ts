@@ -1129,9 +1129,20 @@ function searchRelated(
 
   const makeResult = (notePth: string, depth: number, snippet: string): SearchResult | null => {
     const note = db
-      .prepare('SELECT path, title, tags, aliases, line_count, byte_size, word_count, mtime FROM notes WHERE path = ?')
+      .prepare(
+        'SELECT path, title, tags, aliases, line_count, byte_size, word_count, mtime FROM notes WHERE path = ?',
+      )
       .get(notePth) as
-      | { path: string; title: string; tags: string; aliases: string | null; line_count: number | null; byte_size: number | null; word_count: number | null; mtime: number | null }
+      | {
+          path: string;
+          title: string;
+          tags: string;
+          aliases: string | null;
+          line_count: number | null;
+          byte_size: number | null;
+          word_count: number | null;
+          mtime: number | null;
+        }
       | undefined;
     if (!note) return null;
     let tags: string[];

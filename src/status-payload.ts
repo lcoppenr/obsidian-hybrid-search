@@ -1,7 +1,7 @@
-import { config } from './config.js';
+import { config, effectiveServiceSettings } from './config.js';
 import { getStats } from './db.js';
 import { activeModelName, useRemoteEmbeddings } from './embedder.js';
-import { getIndexingStatus } from './indexer.js';
+import { getIndexingStatus, getScanStatus } from './indexer.js';
 
 export interface StatusPayloadOptions {
   contextLength: number;
@@ -47,5 +47,7 @@ export function buildStatusPayload({
     ignore_patterns: config.ignorePatterns,
     respect_gitignore: config.respectGitignore,
     include_patterns: config.includePatterns,
+    ...getScanStatus(),
+    ...effectiveServiceSettings(),
   };
 }

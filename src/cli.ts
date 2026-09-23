@@ -17,7 +17,7 @@ import {
   truncatePathMiddle,
   wrapPathForTable,
 } from './cli-table-layout.js';
-import { config } from './config.js';
+import { config, validateServiceConfig } from './config.js';
 import {
   applyDbConfigDefaults,
   checkModelChanged,
@@ -576,6 +576,11 @@ program.hook('preAction', async (_thisCommand, actionCommand) => {
 
   const opts = program.opts<{ db?: string }>();
   discoverConfig(opts.db);
+  try {
+    validateServiceConfig();
+  } catch (err) {
+    failCliValidation(err);
+  }
 });
 
 program
@@ -994,6 +999,11 @@ const serveCommand = program
     }
 
     discoverConfig(program.opts<{ db?: string }>().db);
+    try {
+      validateServiceConfig();
+    } catch (err) {
+      failCliValidation(err);
+    }
 
     if (opts.stdio) {
       await init();

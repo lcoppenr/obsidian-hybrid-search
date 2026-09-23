@@ -1,10 +1,12 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import http, {
   type IncomingMessage,
   type Server as NodeHttpServer,
   type ServerResponse,
 } from 'node:http';
-import { config } from './config.js';
+import { config, validateServiceConfig } from './config.js';
 import { closeDb } from './db.js';
 import { createMcpRuntime, createMcpServer, startMcpBackgroundServices } from './mcp-runtime.js';
 import { registerProcessHandlers } from './process-resilience.js';
@@ -28,6 +30,8 @@ export interface HttpMcpServerHandle {
 export async function runHttpMcpServer(
   options: HttpMcpServerOptions,
 ): Promise<HttpMcpServerHandle> {
+  validateServiceConfig();
+  const bearerToken = loadBearerToken(config.mcpTokenFile);
   const runtime = await createMcpRuntime();
   let actualPort = options.port;
 
@@ -53,6 +57,12 @@ export async function runHttpMcpServer(
         transport: 'streamable-http',
         vaultPath: config.vaultPath,
       });
+      return;
+    }
+
+    // /health stays open (liveness for the supervisor); everything else needs the token.
+    if (bearerToken !== undefined && !hasValidBearer(req.headers.authorization, bearerToken)) {
+      writeJson(res, 401, { error: 'unauthorized' }, { 'www-authenticate': 'Bearer' });
       return;
     }
 
@@ -202,4 +212,30 @@ function hasExplicitPort(host: string): boolean {
   if (host.startsWith('[')) return /\]:\d+$/.test(host);
   const colonMatches = host.match(/:/g);
   return colonMatches?.length === 1 && /:\d+$/.test(host);
+}
+
+/**
+ * OBSIDIAN_MCP_TOKEN_FILE: read once at startup. A missing, unreadable or empty file
+ * stops the server rather than silently serving without authentication.
+ */
+export function loadBearerToken(tokenFile: string | undefined): string | undefined {
+  if (tokenFile === undefined) return undefined;
+  let token: string;
+  try {
+    token = readFileSync(tokenFile, 'utf-8').trim();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`OBSIDIAN_MCP_TOKEN_FILE could not be read (${tokenFile}): ${reason}`);
+  }
+  if (!token) throw new Error(`OBSIDIAN_MCP_TOKEN_FILE is empty (${tokenFile})`);
+  return token;
+}
+
+function hasValidBearer(header: string | undefined, token: string): boolean {
+  if (!header) return false;
+  const value = header.trim();
+  if (value.slice(0, 7).toLowerCase() !== 'bearer ') return false;
+  const given = Buffer.from(value.slice(7).trim());
+  const expected = Buffer.from(token);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }

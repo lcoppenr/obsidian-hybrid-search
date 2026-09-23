@@ -12,7 +12,7 @@ import {
   StatusToolArgumentsSchema,
   type StringArrayParam,
 } from './boundary-validation.js';
-import { config } from './config.js';
+import { config, validateServiceConfig } from './config.js';
 import {
   getDb,
   getStats,
@@ -94,6 +94,9 @@ export async function checkForUpdates(version = packageVersion): Promise<void> {
 }
 
 export async function createMcpRuntime(): Promise<McpRuntime> {
+  // Refuse to start on an invalid setting, naming it, before anything touches the index.
+  validateServiceConfig();
+
   // Phase 1: open database
   openDb();
 
