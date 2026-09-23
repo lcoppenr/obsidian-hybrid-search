@@ -509,6 +509,23 @@ Root and nested `.gitignore` files are respected by default. Set `OBSIDIAN_RESPE
 
 The database stores the ignore configuration and restores it when the server restarts, even if the environment variable is missing.
 
+### Always-on service settings (fork)
+
+These settings exist for running `ohs serve` unattended against a vault that is sometimes unreachable (for example an iCloud folder while nobody is logged in). An invalid value stops startup with a message naming the setting, and `status` reports every effective value.
+
+| Environment variable          | Default | Description                                                                                                                                        |
+| ----------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OBSIDIAN_UNREADABLE_VAULT`   | `keep`  | Vault root unreadable: `keep` serves the last index, skips cleanup and ignores watcher deletions; `purge` is the legacy behaviour                  |
+| `OBSIDIAN_UNREADABLE_SUBTREE` | `keep`  | A folder that fails to read keeps its notes (`keep`) or loses them (`purge`)                                                                       |
+| `OBSIDIAN_MIN_SCAN_RATIO`     | `0.5`   | A scan that accounts for fewer than this fraction of indexed notes skips the deletion pass and logs it; `0` turns the guard off                    |
+| `OBSIDIAN_RESCAN_MINUTES`     | `0`     | Re-check the vault on this interval (rescan, guarded cleanup, re-queue, re-attach the watcher); `0` is off                                         |
+| `OBSIDIAN_MCP_TOKEN_FILE`     | unset   | File holding a bearer token; `serve` over HTTP then answers 401 without `Authorization: Bearer <token>`. `/health` stays open. `~/` is expanded    |
+| `OBSIDIAN_TEXT_EXTENSIONS`    | `""`    | Extra extensions indexed as plain text, e.g. `ps1,sh,py,html,json,yaml`. No front matter, tags or links; filter with `frontmatter: "file_ext:ps1"` |
+| `OBSIDIAN_HTML_MODE`          | `text`  | `text` strips tags, `<script>` and `<style>`; `raw` indexes the markup                                                                             |
+| `OBSIDIAN_TEXT_MAX_KB`        | `512`   | Text files larger than this are skipped and logged                                                                                                 |
+
+Removing an extension from `OBSIDIAN_TEXT_EXTENSIONS` purges those files from the index on the next scan (logged with a count, exempt from the scan-ratio guard). Adding one back re-indexes them.
+
 ## How it works
 
 1. **Indexing** splits notes by headings with a sliding-window fallback, creates embeddings, and stores the results in SQLite with FTS5 and `sqlite-vec`.

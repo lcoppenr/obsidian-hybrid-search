@@ -724,9 +724,12 @@ export function resolveNotePath(input: string): NotePathResolution | undefined {
   const basename = inputFileName.endsWith('.md') ? inputFileName.slice(0, -3) : inputFileName;
   if (!basename) return undefined;
 
-  const rows = db
-    .prepare('SELECT path FROM notes WHERE path = ? OR path LIKE ? ORDER BY path')
-    .all(`${basename}.md`, `%/${basename}.md`) as { path: string }[];
+  const lookup = db.prepare('SELECT path FROM notes WHERE path = ? OR path LIKE ? ORDER BY path');
+  let rows = lookup.all(`${basename}.md`, `%/${basename}.md`) as { path: string }[];
+  // Indexed text files (OBSIDIAN_TEXT_EXTENSIONS) keep their own extension: `Deploy.ps1`.
+  if (rows.length === 0 && !inputFileName.endsWith('.md') && /\.[^./]+$/.test(inputFileName)) {
+    rows = lookup.all(inputFileName, `%/${inputFileName}`) as { path: string }[];
+  }
 
   if (rows.length === 0) return undefined;
   if (rows.length === 1) return { type: 'resolved', path: rows[0]!.path };

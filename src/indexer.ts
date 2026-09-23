@@ -1,6 +1,6 @@
 import matter from 'gray-matter';
 import { createHash } from 'node:crypto';
-import { readdirSync, statSync } from 'node:fs';
+import { opendirSync, readdirSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -8,7 +8,12 @@ import {
   embedChunksWithRecovery,
   type EmbeddedChunk,
 } from './chunk-embedding.js';
-import { chunkNote, createChunkBoundaryIndex, refineChunksToFit } from './chunker.js';
+import {
+  chunkNote,
+  createChunkBoundaryIndex,
+  refineChunksToFit,
+  slidingWindow,
+} from './chunker.js';
 import { config } from './config.js';
 import {
   deleteNote,
@@ -155,7 +160,40 @@ function resolveMarkdownReferencesForNote(
   return { links, urls: references.urls };
 }
 
-function* walkDir(dir: string, policy: IgnorePolicy): Generator<string> {
+export function isMarkdownPath(p: string): boolean {
+  return p.endsWith('.md');
+}
+
+/** Lowercase extension without the dot; '' when there is none. */
+export function fileExtension(p: string): string {
+  return path.extname(p).slice(1).toLowerCase();
+}
+
+/** True for a file name the indexer picks up: Markdown, or one of the configured text types. */
+export function isIndexableFileName(
+  name: string,
+  textExtensions: ReadonlySet<string> = new Set(config.textExtensions),
+): boolean {
+  if (name.endsWith('.md')) return true;
+  const ext = fileExtension(name);
+  return ext !== '' && textExtensions.has(ext);
+}
+
+export interface VaultScan {
+  /** Absolute paths of indexable, non-ignored files. */
+  files: string[];
+  /** False when the vault root itself could not be listed. */
+  rootReadable: boolean;
+  /** Vault-relative folders (trailing '/') that failed to list, excluding the root. */
+  failedDirs: string[];
+}
+
+function* walkDir(
+  dir: string,
+  policy: IgnorePolicy,
+  failedDirs: string[],
+  textExtensions: ReadonlySet<string>,
+): Generator<string> {
   let entries: { name: string; isDirectory(): boolean; isFile(): boolean }[];
   try {
     entries = readdirSync(dir, {
@@ -163,6 +201,7 @@ function* walkDir(dir: string, policy: IgnorePolicy): Generator<string> {
       encoding: 'utf-8',
     });
   } catch {
+    failedDirs.push(dir);
     return;
   }
   for (const entry of entries) {
@@ -170,24 +209,182 @@ function* walkDir(dir: string, policy: IgnorePolicy): Generator<string> {
     if (entry.isDirectory()) {
       const rel = toVaultRelativePath(full);
       if (!policy.isIgnored(rel + '/')) {
-        yield* walkDir(full, policy);
+        yield* walkDir(full, policy, failedDirs, textExtensions);
       }
-    } else if (entry.isFile() && entry.name.endsWith('.md')) {
+    } else if (entry.isFile() && isIndexableFileName(entry.name, textExtensions)) {
       yield full;
     }
   }
 }
 
-export function scanVault(): string[] {
+export function scanVaultDetailed(): VaultScan {
   const files: string[] = [];
+  const failed: string[] = [];
   const policy = createIgnorePolicy();
-  for (const fullPath of walkDir(config.vaultPath, policy)) {
+  const textExtensions = new Set(config.textExtensions);
+  for (const fullPath of walkDir(config.vaultPath, policy, failed, textExtensions)) {
     const rel = toVaultRelativePath(fullPath);
     if (!policy.isIgnored(rel)) {
       files.push(fullPath);
     }
   }
-  return files;
+  const rootReadable = !failed.includes(config.vaultPath);
+  const failedDirs = failed
+    .filter((dir) => dir !== config.vaultPath)
+    .map((dir) => toVaultRelativePath(dir) + '/');
+  return { files, rootReadable, failedDirs };
+}
+
+export function scanVault(): string[] {
+  return scanVaultDetailed().files;
+}
+
+/** Whether the vault root can be listed right now. */
+export function isVaultRootReadable(): boolean {
+  try {
+    const dir = opendirSync(config.vaultPath);
+    try {
+      dir.readSync();
+    } finally {
+      dir.closeSync();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface ScanRecord {
+  lastScanOkAt: string | null;
+  lastScanNotes: number | null;
+  lastScanFailedDirs: number | null;
+}
+
+let _lastScan: ScanRecord = { lastScanOkAt: null, lastScanNotes: null, lastScanFailedDirs: null };
+
+function recordScan(scan: VaultScan): void {
+  if (!scan.rootReadable) return;
+  _lastScan = {
+    lastScanOkAt: new Date().toISOString(),
+    lastScanNotes: scan.files.length,
+    lastScanFailedDirs: scan.failedDirs.length,
+  };
+}
+
+/** Vault reachability and the last scan that could read the vault root. */
+export function getScanStatus(): {
+  vault_reachable: boolean;
+  last_scan_ok_at: string | null;
+  last_scan_notes: number | null;
+  last_scan_failed_dirs: number | null;
+} {
+  return {
+    vault_reachable: isVaultRootReadable(),
+    last_scan_ok_at: _lastScan.lastScanOkAt,
+    last_scan_notes: _lastScan.lastScanNotes,
+    last_scan_failed_dirs: _lastScan.lastScanFailedDirs,
+  };
+}
+
+const TEXT_EXTENSIONS_KEY = 'text_extensions';
+
+/**
+ * Compare the configured text-extension list with the one the index was built with.
+ * Notes whose extension was removed are purged here, deliberately and with a log line;
+ * this purge is exempt from OBSIDIAN_MIN_SCAN_RATIO. Added extensions need nothing:
+ * the next scan picks the files up. Returns the number of notes purged.
+ */
+export function applyTextExtensionChange(): number {
+  const db = getDb();
+  const current = config.textExtensions;
+  const currentJson = JSON.stringify(current);
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(TEXT_EXTENSIONS_KEY) as
+    { value: string } | undefined;
+  if (row?.value === currentJson) return 0;
+
+  let removed: string[] = [];
+  if (row) {
+    try {
+      const previous = JSON.parse(row.value) as unknown;
+      if (Array.isArray(previous)) {
+        removed = previous.map(String).filter((ext) => !current.includes(ext));
+      }
+    } catch {
+      /* malformed setting: treat as first run */
+    }
+  }
+
+  let purged = 0;
+  if (removed.length > 0) {
+    const removedSet = new Set(removed);
+    const paths = (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(
+      (r) => r.path,
+    );
+    for (const p of paths) {
+      if (!isMarkdownPath(p) && removedSet.has(fileExtension(p))) {
+        deleteNote(p);
+        purged++;
+      }
+    }
+  }
+
+  db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
+    TEXT_EXTENSIONS_KEY,
+    currentJson,
+  );
+  if (removed.length > 0) {
+    process.stderr.write(
+      `[indexer] text extensions removed (${removed.join(', ')}); purged ${purged} note${purged === 1 ? '' : 's'}\n`,
+    );
+  }
+  if (purged > 0) bumpIndexVersion();
+  return purged;
+}
+
+/**
+ * Stale-note cleanup behind the unreadable-vault guards. Every scan-then-cleanup
+ * path goes through here so a vault that cannot be read serves the last index
+ * instead of emptying it.
+ */
+async function cleanupAfterScan(
+  scan: VaultScan,
+  label: string,
+  recoverDatabase: (() => void) | undefined,
+): Promise<'cleaned' | 'vault-unreadable'> {
+  recordScan(scan);
+  await runWithDatabaseRecovery(
+    `${label} (text extensions)`,
+    () => applyTextExtensionChange(),
+    recoverDatabase,
+  );
+
+  if (!scan.rootReadable && config.unreadableVault === 'keep') {
+    process.stderr.write(
+      `[indexer] vault root is not readable (${config.vaultPath}); keeping the existing index, cleanup skipped\n`,
+    );
+    return 'vault-unreadable';
+  }
+
+  const keepSubtrees = config.unreadableSubtree === 'keep';
+  if (scan.failedDirs.length > 0) {
+    const shown = scan.failedDirs.slice(0, 5).join(', ');
+    const more = scan.failedDirs.length > 5 ? ` and ${scan.failedDirs.length - 5} more` : '';
+    process.stderr.write(
+      `[indexer] ${scan.failedDirs.length} folder${scan.failedDirs.length === 1 ? '' : 's'} not readable (${shown}${more}); ${keepSubtrees ? 'keeping' : 'purging'} their notes\n`,
+    );
+  }
+
+  const fsPaths = new Set(scan.files.map(toVaultRelativePath));
+  await runWithDatabaseRecovery(
+    label,
+    () =>
+      cleanupStaleNotes(fsPaths, {
+        protectedPrefixes: keepSubtrees ? scan.failedDirs : [],
+        minScanRatio: config.minScanRatio,
+      }),
+    recoverDatabase,
+  );
+  return 'cleaned';
 }
 
 export async function indexFile(
@@ -207,6 +404,19 @@ export async function indexFile(
     // Fast skip: mtime unchanged
     if (existing && existing.mtime === mtime) return 'skipped';
 
+    const isText = !isMarkdownPath(relPath);
+    if (isText && stat.size > config.textMaxKb * 1024) {
+      process.stderr.write(
+        `[indexer] skipped ${relPath}: ${Math.ceil(stat.size / 1024)} KB exceeds OBSIDIAN_TEXT_MAX_KB=${config.textMaxKb}\n`,
+      );
+      // A file that grew past the limit no longer qualifies; drop its stale entry.
+      if (getNoteMeta(relPath)) {
+        deleteNote(relPath);
+        bumpIndexVersion();
+      }
+      return 'skipped';
+    }
+
     const raw = await readFile(fullPath, 'utf-8');
     const hash = createHash('md5').update(raw).digest('hex');
 
@@ -214,6 +424,11 @@ export async function indexFile(
     if (existing && existing.hash === hash) {
       getDb().prepare('UPDATE notes SET mtime = ? WHERE path = ?').run(mtime, relPath);
       return 'skipped';
+    }
+
+    if (isText) {
+      await indexTextFile(relPath, fullPath, raw, mtime, hash, contextLength);
+      return 'indexed';
     }
 
     const parsed = matter(raw);
@@ -291,6 +506,129 @@ export async function indexFile(
   }
 }
 
+/**
+ * Plain-text branch (OBSIDIAN_TEXT_EXTENSIONS): scripts, HTML, config. None of the
+ * Markdown parsing applies — no front matter, no tags, no wikilinks or Markdown links
+ * (bash `[[ ]]`, `#Requires`, CSS colours and `# comment` lines would all be misread).
+ * Chunked by sliding window only. A synthetic `file_ext` front-matter field lets
+ * searches filter by type (`frontmatter: "file_ext:ps1"`, `"-file_ext:html"`).
+ */
+async function indexTextFile(
+  relPath: string,
+  fullPath: string,
+  raw: string,
+  mtime: number,
+  hash: string,
+  contextLength: number | undefined,
+): Promise<void> {
+  const ext = fileExtension(relPath);
+  const isHtml = ext === 'html' || ext === 'htm';
+  const content = isHtml && config.htmlMode === 'text' ? htmlToText(raw) : raw;
+  const title = (isHtml ? extractHtmlTitle(raw) : undefined) ?? path.basename(fullPath);
+
+  const ctxLen = contextLength ?? (await getContextLength());
+  let embeddedChunks: EmbeddedChunk[] = [];
+  if (content.trim().length > 0) {
+    const windows = slidingWindow(content, ctxLen, config.chunkOverlap).filter(
+      (c) => c.text.trim().length > 0,
+    );
+    if (windows.length > 0) {
+      const tokenPolicy = await getDocumentTokenPolicy();
+      const boundaryIndex = createChunkBoundaryIndex(content);
+      const project = createDocumentTextProjector(title, tokenPolicy);
+      const chunks = refineChunksToFit(
+        content,
+        windows,
+        tokenPolicy.limit,
+        (body, headingChain) => tokenPolicy.count(project(body, headingChain)),
+        config.chunkOverlap,
+        boundaryIndex,
+      );
+      embeddedChunks = await embedChunksWithRecovery({
+        source: content,
+        chunks,
+        boundaryIndex,
+        project,
+        embed: (texts) => embedDetailed(texts, 'document'),
+      });
+    }
+  }
+
+  upsertNote({
+    path: relPath,
+    title,
+    tags: [],
+    aliases: [],
+    content,
+    frontmatter: { file_ext: ext },
+    mtime,
+    hash,
+    chunks: embeddedChunks.map(({ chunk, embedding }) => ({
+      text: chunk.text,
+      headingPath: null,
+      embedding,
+      charStart: chunk.charStart,
+      charEnd: chunk.charEnd,
+    })),
+  });
+  upsertLinks(relPath, []);
+  upsertMarkdownLinks(relPath, []);
+  upsertNoteUrls(relPath, []);
+  bumpIndexVersion();
+}
+
+const HTML_ENTITIES: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+  nbsp: ' ',
+};
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+    if (entity.startsWith('#x') || entity.startsWith('#X')) {
+      const code = Number.parseInt(entity.slice(2), 16);
+      return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    if (entity.startsWith('#')) {
+      const code = Number.parseInt(entity.slice(1), 10);
+      return Number.isFinite(code) && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    return HTML_ENTITIES[entity.toLowerCase()] ?? match;
+  });
+}
+
+/** HTML to searchable text: drops script/style/comments and tags, keeps block breaks. */
+export function htmlToText(html: string): string {
+  const withoutCode = html
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<script\b[\s\S]*?<\/script\s*>/gi, ' ')
+    .replace(/<style\b[\s\S]*?<\/style\s*>/gi, ' ')
+    .replace(/<head\b[\s\S]*?<\/head\s*>/gi, (head) => {
+      // Keep the <title> text; the rest of <head> is metadata.
+      const title = extractHtmlTitle(head);
+      return title ? `${title}\n` : ' ';
+    });
+  const text = withoutCode
+    .replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6]|\/section|\/article|\/table)\b[^>]*>/gi, '\n')
+    .replace(/<[^<>]*>/g, ' ');
+  return decodeHtmlEntities(text)
+    .split('\n')
+    .map((line) => line.replace(/[ \t\f\v\r]+/g, ' ').trim())
+    .filter((line, i, lines) => line !== '' || (i > 0 && lines[i - 1] !== ''))
+    .join('\n')
+    .trim();
+}
+
+export function extractHtmlTitle(html: string): string | undefined {
+  const match = /<title\b[^>]*>([\s\S]*?)<\/title\s*>/i.exec(html);
+  if (!match) return undefined;
+  const title = decodeHtmlEntities(match[1]!).replace(/\s+/g, ' ').trim();
+  return title || undefined;
+}
+
 export async function indexFileWithRecovery(
   fullPath: string,
   contextLength: number,
@@ -325,7 +663,9 @@ export async function populateMissingLinks(): Promise<void> {
   if (done) return;
 
   const notes = db
-    .prepare('SELECT path, content, frontmatter FROM notes WHERE content IS NOT NULL')
+    .prepare(
+      "SELECT path, content, frontmatter FROM notes WHERE content IS NOT NULL AND path LIKE '%.md'",
+    )
     .all() as {
     path: string;
     content: string;
@@ -352,11 +692,13 @@ export async function populateMissingMarkdownReferences(): Promise<void> {
   )?.value;
   if (done) return;
 
-  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as {
+  const notes = db
+    .prepare("SELECT path, content FROM notes WHERE content IS NOT NULL AND path LIKE '%.md'")
+    .all() as {
     path: string;
     content: string;
   }[];
-  const existingPaths = new Set(notes.map((note) => note.path));
+  const existingPaths = getExistingNotePathSet();
   const tx = db.transaction(() => {
     for (const note of notes) {
       const references = resolveMarkdownReferencesForNote(note.path, note.content, existingPaths);
@@ -382,7 +724,9 @@ export async function populateMissingMarkdownReferences(): Promise<void> {
 async function resolveAllLinks(): Promise<void> {
   const db = getDb();
   const notes = db
-    .prepare('SELECT path, content, frontmatter FROM notes WHERE content IS NOT NULL')
+    .prepare(
+      "SELECT path, content, frontmatter FROM notes WHERE content IS NOT NULL AND path LIKE '%.md'",
+    )
     .all() as {
     path: string;
     content: string;
@@ -397,11 +741,13 @@ async function resolveAllLinks(): Promise<void> {
 // eslint-disable-next-line @typescript-eslint/require-await
 async function resolveAllMarkdownReferences(): Promise<void> {
   const db = getDb();
-  const notes = db.prepare('SELECT path, content FROM notes WHERE content IS NOT NULL').all() as {
+  const notes = db
+    .prepare("SELECT path, content FROM notes WHERE content IS NOT NULL AND path LIKE '%.md'")
+    .all() as {
     path: string;
     content: string;
   }[];
-  const existingPaths = new Set(notes.map((note) => note.path));
+  const existingPaths = getExistingNotePathSet();
   for (const note of notes) {
     const references = resolveMarkdownReferencesForNote(note.path, note.content, existingPaths);
     upsertMarkdownLinks(note.path, references.links);
@@ -415,7 +761,10 @@ async function resolveAllMarkdownReferences(): Promise<void> {
  * - notes whose files were deleted from disk
  * Called on server startup and during full reindex.
  */
-export function cleanupStaleNotes(fsPaths?: Set<string>): void {
+export function cleanupStaleNotes(
+  fsPaths?: Set<string>,
+  options: { protectedPrefixes?: readonly string[]; minScanRatio?: number } = {},
+): void {
   let deleted = 0;
 
   // Newly ignored notes: file still exists on disk, keep their link entries
@@ -439,8 +788,20 @@ export function cleanupStaleNotes(fsPaths?: Set<string>): void {
     const dbPaths = (db.prepare('SELECT path FROM notes').all() as { path: string }[]).map(
       (r) => r.path,
     );
-    for (const dbPath of dbPaths) {
-      if (!fsPaths.has(dbPath)) {
+    // Scan-driven callers pass config.minScanRatio; a bare call keeps upstream behaviour.
+    const ratio = options.minScanRatio ?? 0;
+    const protectedPrefixes = options.protectedPrefixes ?? [];
+    const isProtected = (p: string) => protectedPrefixes.some((prefix) => p.startsWith(prefix));
+    const candidates = dbPaths.filter((p) => !fsPaths.has(p) && !isProtected(p));
+    // Notes kept because their folder could not be read are not missing; only the
+    // deletion candidates count against the scan.
+    const accounted = dbPaths.length - candidates.length;
+    if (ratio > 0 && candidates.length > 0 && accounted < ratio * dbPaths.length) {
+      process.stderr.write(
+        `[indexer] scan found ${accounted} of ${dbPaths.length} indexed notes (below OBSIDIAN_MIN_SCAN_RATIO=${ratio}); deletion pass skipped\n`,
+      );
+    } else {
+      for (const dbPath of candidates) {
         deleteNote(dbPath); // keepLinks=false
         deleted++;
       }
@@ -475,13 +836,14 @@ export async function indexVaultSync(
   header = 'Indexing vault...',
   options: { requireClean?: boolean; recoverDatabase?: () => void } = {},
 ): Promise<IndexResult> {
-  const files = scanVault();
-  const fsPaths = new Set(files.map(toVaultRelativePath));
-  await runWithDatabaseRecovery(
-    'stale-note cleanup',
-    () => cleanupStaleNotes(fsPaths),
-    options.recoverDatabase,
-  );
+  const scan = scanVaultDetailed();
+  const files = scan.files;
+  const cleanup = await cleanupAfterScan(scan, 'stale-note cleanup', options.recoverDatabase);
+  if (cleanup === 'vault-unreadable') {
+    throw new Error(
+      `Vault path is not readable: ${config.vaultPath}; the existing index was left unchanged.`,
+    );
+  }
 
   const contextLength = await getContextLength();
   const result: IndexResult = { indexed: 0, skipped: 0, errors: [] };
@@ -597,6 +959,7 @@ export function resetIndexingState(): void {
   _totalExpected = 0;
   _processedCount = 0;
   _indexingDbLock = Promise.resolve();
+  _lastScan = { lastScanOkAt: null, lastScanNotes: null, lastScanFailedDirs: null };
 }
 
 /**
@@ -677,15 +1040,11 @@ async function processQueue(contextLength: number): Promise<void> {
 }
 
 export async function startBackgroundIndexing(contextLength: number): Promise<void> {
-  const files = scanVault();
-  const fsPaths = new Set(files.map(toVaultRelativePath));
-  await withIndexingDbLock(() => {
-    return runWithDatabaseRecovery(
-      'background stale-note cleanup',
-      () => cleanupStaleNotes(fsPaths),
-      recoverDatabaseSidecarsForIndexing,
-    );
-  });
+  const scan = scanVaultDetailed();
+  const files = scan.files;
+  await withIndexingDbLock(() =>
+    cleanupAfterScan(scan, 'background stale-note cleanup', recoverDatabaseSidecarsForIndexing),
+  );
   _totalExpected = files.length;
   _processedCount = 0;
   _indexQueue.push(...files);
@@ -696,6 +1055,16 @@ export async function startBackgroundIndexing(contextLength: number): Promise<vo
   }
 }
 
+let _rescanTimer: ReturnType<typeof setInterval> | undefined;
+let _rescanQueued = false;
+
+/** Stop the OBSIDIAN_RESCAN_MINUTES timer, if one is running. */
+export function stopRescanTimer(): void {
+  if (_rescanTimer) clearInterval(_rescanTimer);
+  _rescanTimer = undefined;
+  _rescanQueued = false;
+}
+
 const fileDelays = new Map<string, ReturnType<typeof setTimeout>>();
 const pendingUnlinks = new Set<string>();
 
@@ -703,6 +1072,7 @@ export function startWatcher(contextLength: number): void {
   import('chokidar')
     .then(({ watch }) => {
       let watcherPolicy = createIgnorePolicy();
+      let watcherTextExtensions: ReadonlySet<string> = new Set(config.textExtensions);
       const watcher = watch(config.vaultPath, {
         ignored: (filePath: string) => {
           const base = path.basename(filePath);
@@ -720,7 +1090,7 @@ export function startWatcher(contextLength: number): void {
           } catch {
             // File doesn't exist — fall through to extension check below
           }
-          if (!base.endsWith('.md')) return true;
+          if (!isIndexableFileName(base, watcherTextExtensions)) return true;
           const rel = toVaultRelativePath(filePath);
           return watcherPolicy.isIgnored(rel);
         },
@@ -749,13 +1119,20 @@ export function startWatcher(contextLength: number): void {
         void withIndexingDbLock(async () => {
           try {
             watcherPolicy = createIgnorePolicy();
-            const files = scanVault();
-            const fsPaths = new Set(files.map(toVaultRelativePath));
-            await runWithDatabaseRecovery(
+            watcherTextExtensions = new Set(config.textExtensions);
+            const scan = scanVaultDetailed();
+            const files = scan.files;
+            await cleanupAfterScan(
+              scan,
               'watcher gitignore cleanup',
-              () => cleanupStaleNotes(fsPaths),
               recoverDatabaseSidecarsForIndexing,
             );
+            if (!_isIndexing && _indexQueue.length === 0) {
+              // A rescan re-queues every file; start the progress counters afresh so the
+              // log and `status` report this pass rather than a running total.
+              _totalExpected = 0;
+              _processedCount = 0;
+            }
             for (const file of files) {
               const normalizedPath = path.normalize(file).normalize('NFD');
               if (!_indexQueue.includes(normalizedPath)) {
@@ -796,6 +1173,12 @@ export function startWatcher(contextLength: number): void {
               handleGitignoreChange();
               return;
             }
+            if (config.unreadableVault === 'keep' && !isVaultRootReadable()) {
+              process.stderr.write(
+                `[watcher] ignoring unlink of ${filePath}: vault root is not readable\n`,
+              );
+              return;
+            }
             const rel = toVaultRelativePath(filePath);
             const existing = fileDelays.get(filePath);
             if (existing) {
@@ -822,6 +1205,22 @@ export function startWatcher(contextLength: number): void {
       watcher.on('add', safeHandleFileChange);
       watcher.on('change', safeHandleFileChange);
       watcher.on('unlink', safeHandleUnlink);
+
+      const rescanMinutes = config.rescanMinutes;
+      if (rescanMinutes > 0) {
+        stopRescanTimer();
+        _rescanTimer = setInterval(() => {
+          // One rescan at a time: a slow pass must not stack more behind the lock.
+          if (_rescanQueued) return;
+          _rescanQueued = true;
+          handleGitignoreChange();
+          // Queued behind the rescan on the same lock, so it clears once the rescan ran.
+          void withIndexingDbLock(() => {
+            _rescanQueued = false;
+          });
+        }, rescanMinutes * 60_000);
+        _rescanTimer.unref();
+      }
     })
     .catch((err) => {
       console.warn('[watcher] chokidar load error:', err);
@@ -949,6 +1348,20 @@ export function resolveWikilinks(content: string, fromPath: string): string[] {
   const resolved: string[] = [];
   for (const rawTarget of raw) {
     const target = rawTarget.normalize('NFD');
+
+    // 0. Indexed text files ([[Script.ps1]]): the target already carries its extension.
+    const targetExt = fileExtension(target);
+    if (targetExt !== '' && targetExt !== 'md') {
+      const byTextPath =
+        (pathSet.has(target) ? target : undefined) ??
+        (target.includes('/') ? suffixMap.get(target.toLowerCase()) : undefined) ??
+        basenameMap.get(path.basename(target).toLowerCase());
+      if (byTextPath && byTextPath !== fromPath) {
+        resolved.push(byTextPath);
+        continue;
+      }
+    }
+
     const withMd = target.endsWith('.md') ? target : target + '.md';
     const base = path.basename(withMd);
 
