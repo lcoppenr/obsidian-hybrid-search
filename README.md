@@ -524,6 +524,8 @@ These settings exist for running `ohs serve` unattended against a vault that is 
 | `OBSIDIAN_HTML_MODE`          | `text`  | `text` strips tags, `<script>` and `<style>`; `raw` indexes the markup                                                                             |
 | `OBSIDIAN_TEXT_MAX_KB`        | `512`   | Text files larger than this are skipped and logged                                                                                                 |
 
+Background indexing logs each file that fails (up to 10 per pass) and a summary line with indexed, skipped and error counts. `status` reports `last_index_pass_errors` and up to five failed paths with their errors.
+
 Removing an extension from `OBSIDIAN_TEXT_EXTENSIONS` purges those files from the index on the next scan (logged with a count, exempt from the scan-ratio guard). Adding one back re-indexes them.
 
 ## How it works
