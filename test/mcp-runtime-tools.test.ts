@@ -223,6 +223,14 @@ describe('createMcpServer — tool dispatch', () => {
     assert.ok(typeof parsed.total === 'number');
     assert.ok(typeof parsed.version === 'string');
     assert.ok(typeof parsed.context_length === 'number');
+    // Studio-service fields: scan state and every effective service setting.
+    assert.equal(typeof parsed.vault_reachable, 'boolean');
+    assert.ok('last_scan_ok_at' in parsed);
+    assert.ok('last_scan_notes' in parsed);
+    assert.equal(parsed.unreadable_vault, 'keep');
+    assert.equal(parsed.min_scan_ratio, 0.5);
+    assert.ok(Array.isArray(parsed.text_extensions));
+    assert.ok('mcp_token_file' in parsed);
   });
 
   it('tools/call read with array of paths returns one result per path', async () => {
