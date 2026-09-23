@@ -12,7 +12,7 @@ import {
   StatusToolArgumentsSchema,
   type StringArrayParam,
 } from './boundary-validation.js';
-import { config, validateServiceConfig } from './config.js';
+import { config, effectiveServiceSettings, validateServiceConfig } from './config.js';
 import {
   getDb,
   getStats,
@@ -33,6 +33,7 @@ import {
 } from './embedder.js';
 import {
   getIndexingStatus,
+  getScanStatus,
   indexFileWithRecovery,
   indexVaultSync,
   populateMissingLinks,
@@ -523,6 +524,8 @@ function callStatusTool(a: Record<string, unknown>, runtime: McpRuntime): McpToo
     ignore_patterns: config.ignorePatterns,
     respect_gitignore: config.respectGitignore,
     include_patterns: config.includePatterns,
+    ...getScanStatus(),
+    ...effectiveServiceSettings(),
   };
   if (statusArgs.include_activity) {
     output.recent_activity = stats.recentActivity;
