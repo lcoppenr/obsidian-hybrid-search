@@ -255,7 +255,14 @@ describe('createMcpServer — tool dispatch', () => {
         tools: { name: string }[];
       };
       const names = result.tools.map((t) => t.name).sort((a, b) => a.localeCompare(b));
-      assert.deepEqual(names, ['work_list', 'work_read', 'work_reindex', 'work_search', 'work_stats', 'work_status']);
+      assert.deepEqual(names, [
+        'work_list',
+        'work_read',
+        'work_reindex',
+        'work_search',
+        'work_stats',
+        'work_status',
+      ]);
     } finally {
       process.env.OBSIDIAN_PREFIX = prevPrefix;
     }
