@@ -34,6 +34,24 @@ vi.doMock('node:fs', async (importOriginal) => {
   return { ...mod, default: { ...mod, readdirSync, opendirSync }, readdirSync, opendirSync };
 });
 
+const failingReads = new Set<string>();
+
+vi.doMock('node:fs/promises', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('node:fs/promises')>();
+  const readFile = ((p: Parameters<typeof mod.readFile>[0], ...rest: unknown[]) => {
+    const key = typeof p === 'string' ? p : p instanceof URL ? p.pathname : '';
+    if (failingReads.has(key)) {
+      return Promise.reject(
+        Object.assign(new Error(`ETIMEDOUT: operation timed out, open '${key}'`), {
+          code: 'ETIMEDOUT',
+        }),
+      );
+    }
+    return (mod.readFile as (...a: unknown[]) => Promise<unknown>)(p, ...rest);
+  }) as typeof mod.readFile;
+  return { ...mod, default: { ...mod, readFile }, readFile };
+});
+
 vi.mock('chokidar', () => ({
   watch: vi.fn().mockReturnValue({
     add: vi.fn().mockReturnThis(),
@@ -116,6 +134,7 @@ async function settle(ms = 50): Promise<void> {
 
 beforeEach(async () => {
   failing.clear();
+  failingReads.clear();
   for (const name of SETTINGS) delete process.env[name];
   resetIndexingState();
   closeDb();
@@ -135,12 +154,14 @@ afterEach(() => {
 
 afterAll(() => {
   failing.clear();
+  failingReads.clear();
   closeDb();
   for (const name of SETTINGS) delete process.env[name];
   delete process.env.OBSIDIAN_DB_DIR;
   rmSync(vaultDir, { recursive: true, force: true });
   rmSync(dbDir, { recursive: true, force: true });
   vi.doUnmock('node:fs');
+  vi.doUnmock('node:fs/promises');
   vi.resetModules();
 });
 
@@ -329,5 +350,52 @@ describe('status', () => {
     const down = buildStatusPayload({ contextLength: 512, version: 'test' });
     assert.equal(down.vault_reachable, false);
     assert.equal(down.last_scan_ok_at, status.last_scan_ok_at, 'last good scan is kept');
+  });
+});
+
+describe('background indexing failures', () => {
+  it('logs each failed file and a summary, and reports them in status', async () => {
+    write('cloud-a.md', '# A2\n\nNot downloaded.\n');
+    write('cloud-b.md', '# B2\n\nNot downloaded either.\n');
+    failingReads.add(path.join(vaultDir, 'cloud-a.md'));
+    failingReads.add(path.join(vaultDir, 'cloud-b.md'));
+
+    await startBackgroundIndexing(512);
+
+    const lines = stderrSpy.mock.calls.map((c) => String(c[0]));
+    assert.ok(lines.some((l) => /^\[indexer\] failed cloud-a\.md: ETIMEDOUT/.test(l)));
+    assert.ok(lines.some((l) => /^\[indexer\] failed cloud-b\.md: ETIMEDOUT/.test(l)));
+    assert.ok(
+      lines.some((l) => /Indexing complete in .* — 0 indexed, 5 skipped, 2 errors\n$/.test(l)),
+    );
+
+    const status = getScanStatus();
+    assert.equal(status.last_index_pass_errors, 2);
+    assert.deepEqual(
+      status.last_index_pass_error_samples.map((e) => e.path).sort((a, b) => a.localeCompare(b)),
+      ['cloud-a.md', 'cloud-b.md'],
+    );
+    assert.equal(typeof status.last_index_pass_at, 'string');
+  });
+
+  it('caps per-file lines at 10 per pass and counts the rest', async () => {
+    for (let i = 0; i < 13; i++) {
+      write(`cloud-${i}.md`, `# C${i}\n\nNot downloaded.\n`);
+      failingReads.add(path.join(vaultDir, `cloud-${i}.md`));
+    }
+
+    await startBackgroundIndexing(512);
+
+    const lines = stderrSpy.mock.calls.map((c) => String(c[0]));
+    assert.equal(lines.filter((l) => l.startsWith('[indexer] failed ')).length, 10);
+    assert.ok(lines.some((l) => l.includes('13 errors (3 more not listed)')));
+    assert.equal(getScanStatus().last_index_pass_errors, 13);
+    assert.equal(getScanStatus().last_index_pass_error_samples.length, 5);
+  });
+
+  it('a clean pass reports zero errors', async () => {
+    await startBackgroundIndexing(512);
+    assert.equal(getScanStatus().last_index_pass_errors, 0);
+    assert.deepEqual(getScanStatus().last_index_pass_error_samples, []);
   });
 });

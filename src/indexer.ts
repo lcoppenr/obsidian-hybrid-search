@@ -277,12 +277,18 @@ export function getScanStatus(): {
   last_scan_ok_at: string | null;
   last_scan_notes: number | null;
   last_scan_failed_dirs: number | null;
+  last_index_pass_at: string | null;
+  last_index_pass_errors: number;
+  last_index_pass_error_samples: Array<{ path: string; error: string }>;
 } {
   return {
     vault_reachable: isVaultRootReadable(),
     last_scan_ok_at: _lastScan.lastScanOkAt,
     last_scan_notes: _lastScan.lastScanNotes,
     last_scan_failed_dirs: _lastScan.lastScanFailedDirs,
+    last_index_pass_at: _lastPass.at,
+    last_index_pass_errors: _lastPass.errors,
+    last_index_pass_error_samples: _lastPass.errorSamples,
   };
 }
 
@@ -960,6 +966,7 @@ export function resetIndexingState(): void {
   _processedCount = 0;
   _indexingDbLock = Promise.resolve();
   _lastScan = { lastScanOkAt: null, lastScanNotes: null, lastScanFailedDirs: null };
+  _lastPass = emptyPassRecord();
 }
 
 /**
@@ -986,6 +993,44 @@ export function getIndexingStatus(): {
   };
 }
 
+/** Per-file error lines written to the log per indexing pass; the rest are counted. */
+const MAX_ERROR_LOG_LINES = 10;
+/** Failed files kept for `status`. */
+const MAX_ERROR_SAMPLES = 5;
+
+interface IndexPassRecord {
+  at: string | null;
+  indexed: number;
+  skipped: number;
+  errors: number;
+  errorSamples: Array<{ path: string; error: string }>;
+}
+
+const emptyPassRecord = (): IndexPassRecord => ({
+  at: null,
+  indexed: 0,
+  skipped: 0,
+  errors: 0,
+  errorSamples: [],
+});
+
+let _lastPass: IndexPassRecord = emptyPassRecord();
+
+function recordPassResult(pass: IndexPassRecord, result: IndexResult): void {
+  pass.indexed += result.indexed;
+  pass.skipped += result.skipped;
+  for (const failure of result.errors) {
+    const rel = toVaultRelativePath(failure.path);
+    if (pass.errors < MAX_ERROR_LOG_LINES) {
+      process.stderr.write(`[indexer] failed ${rel}: ${failure.error}\n`);
+    }
+    if (pass.errorSamples.length < MAX_ERROR_SAMPLES) {
+      pass.errorSamples.push({ path: rel, error: failure.error });
+    }
+    pass.errors++;
+  }
+}
+
 async function processQueue(contextLength: number): Promise<void> {
   if (_isIndexing) return;
   await withIndexingDbLock(async () => {
@@ -998,17 +1043,19 @@ async function processQueue(contextLength: number): Promise<void> {
       process.stderr.write(`Indexing vault...\n`);
     }
 
+    const pass = emptyPassRecord();
     try {
       const logEvery = Math.max(config.batchSize, Math.floor(total / 10));
       while (_indexQueue.length > 0) {
         const batch = _indexQueue.splice(0, config.batchSize);
-        await indexBatchWithRecovery(
+        const batchResult = await indexBatchWithRecovery(
           batch,
           contextLength,
           false,
           recoverDatabaseSidecarsForIndexing,
         );
         _processedCount += batch.length;
+        recordPassResult(pass, batchResult);
 
         if (
           total > 0 &&
@@ -1029,11 +1076,21 @@ async function processQueue(contextLength: number): Promise<void> {
         recoverDatabaseSidecarsForIndexing,
       );
 
-      if (total > 0) {
+      if (total > 0 || pass.errors > 0) {
         const elapsed = formatDuration((Date.now() - startTime) / 1000);
-        process.stderr.write(`Indexing complete in ${elapsed}\n`);
+        const parts = [`${pass.indexed} indexed`, `${pass.skipped} skipped`];
+        if (pass.errors > 0) {
+          parts.push(`${pass.errors} error${pass.errors === 1 ? '' : 's'}`);
+        }
+        const hidden =
+          pass.errors > MAX_ERROR_LOG_LINES
+            ? ` (${pass.errors - MAX_ERROR_LOG_LINES} more not listed)`
+            : '';
+        process.stderr.write(`Indexing complete in ${elapsed} — ${parts.join(', ')}${hidden}\n`);
       }
     } finally {
+      pass.at = new Date().toISOString();
+      _lastPass = pass;
       _isIndexing = false;
     }
   });
